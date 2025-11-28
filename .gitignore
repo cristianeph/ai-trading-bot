@@ -1,6 +1,7 @@
 # .gitignore
 .idea
 .env
+.env.*
 **/.venv/*
 .venv/*
 data/*
