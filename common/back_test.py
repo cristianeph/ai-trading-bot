@@ -5,15 +5,15 @@ import numpy as np
 
 from pathlib import Path
 from bot.features import build_features_for_symbol
-from .data_client import get_historical_ohlcv
-from .config import settings
+from common.data_client import get_historical_ohlcv
+from common.config import settings
 
 MODEL_PATH = Path("model") / "latest_model.pkl"
 
 
 def backtest_symbol(symbol: str):
     model = joblib.load(MODEL_PATH)
-    ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=1000)
+    ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=200)
     df = build_features_for_symbol(ohlcv, symbol, settings.TIMEFRAME)
 
     feature_cols = ["ma_ratio", "rsi_14", "vol_20"]
