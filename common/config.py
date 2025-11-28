@@ -12,5 +12,6 @@ class Settings:
     TIMEFRAME = "1m" # 15m
     BASE_CAPITAL = float(os.getenv("BASE_CAPITAL", "1000"))
     POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", "0.1"))  # 10%
+    TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "5000"))
 
 settings = Settings()

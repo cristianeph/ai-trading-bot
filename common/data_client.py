@@ -45,10 +45,14 @@ def place_order(symbol: str, side: str, amount: float):
     if settings.TRADING_MODE == "paper":
         print(f"[PAPER] {side.upper()} {amount} {symbol} (no se envía a Binance)")
         return {
-            "status": "paper",
             "symbol": symbol,
             "side": side,
-            "amount": amount,
+            "type": "market",
+            "amount": float(amount),
+            "price": None,
+            "average": None,
+            "cost": None,
+            "fee": {"currency": "USDT", "cost": 0.0},
         }
 
     exchange = get_binance_client()
