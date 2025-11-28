@@ -1,0 +1,9 @@
+# .gitignore
+.idea
+.env
+**/.venv/*
+.venv/*
+data/*
+vector_db/*
+model/*.pkl
+

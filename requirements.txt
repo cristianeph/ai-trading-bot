@@ -1,0 +1,10 @@
+ccxt
+pandas
+numpy
+scikit-learn
+matplotlib
+sqlalchemy
+pydantic
+fastapi
+uvicorn
+python-dotenv

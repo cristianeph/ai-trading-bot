@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src ./src
+
+ENV PYTHONPATH=/app
+
+# Variables de entorno para producción se pasan en docker-compose
+CMD ["python", "-m", "bot.paper_trader.py"]
