@@ -1,4 +1,4 @@
-# src/trainer.py
+# common/trainer.py
 
 import joblib
 from pathlib import Path

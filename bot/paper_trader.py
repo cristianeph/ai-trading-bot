@@ -4,12 +4,12 @@ from typing import Dict, Optional, Any
 import requests
 import pandas as pd
 
-from src.config import settings
-from src.data_client import get_historical_ohlcv, place_order
-from .features import build_features_for_symbol
-from .storage import Storage
+from common.config import settings
+from common.data_client import get_historical_ohlcv, place_order
+from bot.features import build_features_for_symbol
+from bot.storage import Storage
 
-MODEL_URL = "http://model:8000/predict"  # nombre del servicio en docker-compose
+MODEL_URL = "http://localhost:8000/predict"  # nombre del servicio en docker-compose
 
 
 def get_model_action(features: list[float]) -> tuple[str, float]:
@@ -65,11 +65,12 @@ class TradingBot:
 
     def __init__(
             self,
-            sleep_seconds: int = 300,
-            min_confidence: float = 0.55,
+            sleep_seconds: int = 30,
+            min_confidence: float = 0.52,
+            balance: float = 0,
     ) -> None:
         self.storage = Storage()
-        self.capital: float = settings.BASE_CAPITAL
+        self.capital: float = balance
         self.positions: Dict[str, Optional[Dict[str, Any]]] = {
             symbol: None for symbol in settings.SYMBOLS
         }
@@ -272,13 +273,28 @@ class TradingBot:
             print("[BOT] Bot detenido limpiamente.")
 
 
+def check_if_balance():
+    import ccxt
+    exchange = ccxt.binance({
+        "apiKey": settings.BINANCE_API_KEY,
+        "secret": settings.BINANCE_API_SECRET,
+    })
+    exchange.set_sandbox_mode(True)
+    balance = exchange.fetch_balance()
+
+    if settings.TRADING_MODE == "live":
+        return balance['USDT']['total']
+    else:
+        return settings.BASE_CAPITAL
+
+
 def run_bot_loop() -> None:
-    """
-    Función wrapper para mantener compatibilidad con el entrypoint actual.
-    """
-    bot = TradingBot()
+
+    actual_balance = check_if_balance()
+    bot = TradingBot(balance=actual_balance)
     bot.run()
 
 
 if __name__ == "__main__":
+
     run_bot_loop()

@@ -1,7 +1,7 @@
-# src/data_client.py
+# common/data_client.py
 
 import ccxt
-from src.config import settings
+from common.config import settings
 
 
 def get_binance_client():

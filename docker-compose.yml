@@ -7,14 +7,16 @@ services:
       dockerfile: model/model.Dockerfile
     container_name: crypto-model
     restart: unless-stopped
+    ports:
+      - "8000:8000"
 
-  bot:
-    build:
-      context: .
-      dockerfile: bot/bot.Dockerfile
-    container_name: crypto-bot
-    depends_on:
-      - model
-    env_file:
-      - .env
-    restart: unless-stopped
+#  bot:
+#    build:
+#      context: .
+#      dockerfile: bot/bot.Dockerfile
+#    container_name: crypto-bot
+#    depends_on:
+#      - model
+#    env_file:
+#      - .env
+#    restart: unless-stopped
