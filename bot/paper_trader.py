@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 
 from common.config import settings
-from common.data_client import get_historical_ohlcv, place_order
+from common.data_client import get_historical_ohlcv, place_order, get_binance_client
 from bot.features import build_features_for_symbol
 from bot.storage import Storage
 
@@ -394,12 +394,7 @@ class TradingBot:
 
 
 def check_if_balance():
-    import ccxt
-    exchange = ccxt.binance({
-        "apiKey": settings.BINANCE_API_KEY,
-        "secret": settings.BINANCE_API_SECRET,
-    })
-    exchange.set_sandbox_mode(True)
+    exchange = get_binance_client()
     balance = exchange.fetch_balance()
 
     if settings.TRADING_MODE == "live":
@@ -416,5 +411,8 @@ def run_bot_loop() -> None:
 
 
 if __name__ == "__main__":
-
+    print(
+        f"[DEBUG CONFIG] BINANCE_TESTNET={settings.BINANCE_TESTNET}, "
+        f"TRADING_MODE={settings.TRADING_MODE}"
+    )
     run_bot_loop()
