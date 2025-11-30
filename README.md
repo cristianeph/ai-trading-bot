@@ -32,6 +32,12 @@ To stop all containers
 `docker compose down`
 
 # 3. For Db versioning
-alembic init migrations
-alembic revision -m "baseline existing schema"
-alembic stamp head
+
+Only for initialize migrations the first time project runs:
+`alembic init migrations`
+
+To make changes on sqlmodel entities:
+
+`alembic revision -m "baseline existing schema"`
+
+`alembic stamp head`
