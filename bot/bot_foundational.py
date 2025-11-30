@@ -23,6 +23,11 @@ DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05%
 HOLD_CONF_MARGIN: float = 0.10
 HOLD_SAMPLE_EVERY_MIN: int = 10
 
+# Minimum tradable amount per symbol (to avoid exchange min-amount errors)
+MIN_TRADE_AMOUNT: dict[str, float] = {
+    "BTC/USDT": 0.00001,
+}
+
 
 class PnL(NamedTuple):
     """Container for unrealized PnL details."""
@@ -78,28 +83,57 @@ class FoundationalTradingBot(BaseTradingBot):
     # ------------------------------------------------------------------ #
 
     def _init_existing_btc(self, initial_btc_amount: float) -> None:
+        """
+        Initialize an existing BTC position if and only if:
+          - the amount is above the minimum tradable threshold, and
+          - the trade history indicates there is an open long (last BUY is more
+            recent than last SELL) for this bot_type and mode.
+
+        Otherwise, the existing BTC balance is treated as external/dust and is
+        not managed as an open position by this bot.
+        """
+        from common.data_client import get_historical_ohlcv
+
         try:
+            min_amount = MIN_TRADE_AMOUNT.get("BTC/USDT")
+            if min_amount is not None and initial_btc_amount < min_amount:
+                # Too small to trade reliably: treat as dust, do not create a position.
+                self.log.info(
+                    f"[BTC/USDT] Existing BTC balance {initial_btc_amount:.8f} "
+                    f"is below minimum tradable amount {min_amount:.8f}. "
+                    f"Ignoring it as dust (no managed position will be created)."
+                )
+                return
+
             last_buy = self.storage.get_last_buy("BTC/USDT", mode=settings.TRADING_MODE)
-            entry_price: float
+            last_sell = self.storage.get_last_sell("BTC/USDT", mode=settings.TRADING_MODE)
 
-            from common.data_client import get_historical_ohlcv
+            # Determine if there is an open long in the DB:
+            # - No BUY -> no open long.
+            # - BUY exists and no SELL -> open long.
+            # - BUY and SELL exist -> open long only if last BUY is more recent.
+            if last_buy is None:
+                self.log.info(
+                    "[BTC/USDT] Existing BTC balance detected but no BUY trades "
+                    "for this bot/mode. Treating it as external balance; "
+                    "no managed position will be created."
+                )
+                return
 
-            if last_buy is not None:
-                entry_price = float(last_buy.price)
+            if last_sell is not None and last_sell.timestamp >= last_buy.timestamp:
                 self.log.info(
-                    f"[BTC/USDT] Loaded existing BTC using last BUY from DB: "
-                    f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
+                    "[BTC/USDT] Existing BTC balance detected but last SELL is "
+                    "more recent than or equal to last BUY. Assuming no open "
+                    "bot-managed long position; will not create a managed position."
                 )
-            else:
-                ohlcv_init = get_historical_ohlcv("BTC/USDT", settings.TIMEFRAME, limit=1)
-                if not ohlcv_init:
-                    raise RuntimeError("No OHLCV data to initialize BTC position.")
-                last_candle = ohlcv_init[-1]
-                entry_price = float(last_candle[4])
-                self.log.info(
-                    f"[BTC/USDT] Loaded existing BTC using current market price: "
-                    f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
-                )
+                return
+
+            # At this point we consider there is an open long from the bot's perspective.
+            entry_price = float(last_buy.price)
+            self.log.info(
+                f"[BTC/USDT] Loaded existing BTC using last BUY from DB: "
+                f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
+            )
 
             self.positions["BTC/USDT"] = cast(
                 Position,

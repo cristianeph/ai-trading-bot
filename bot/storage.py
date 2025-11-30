@@ -138,9 +138,14 @@ class Storage:
             session.add(trade)
             session.commit()
 
-    def get_last_buy(self, symbol: str, mode: str = "live") -> Optional[Trade]:
+    def get_last_trade(
+        self,
+        symbol: str,
+        side: str,
+        mode: str = "live",
+    ) -> Optional[Trade]:
         """
-        Returns the most recent BUY trade for the given symbol, trading mode,
+        Returns the most recent trade for the given symbol, side, trading mode,
         and current Storage.bot_type, or None if there is no record.
         """
         with self._get_session() as session:
@@ -148,7 +153,7 @@ class Storage:
                 select(Trade)
                 .where(
                     Trade.symbol == symbol,
-                    Trade.side == "buy",
+                    Trade.side == side,
                     Trade.mode == mode,
                     Trade.bot_type == self.bot_type,
                 )
@@ -157,6 +162,18 @@ class Storage:
             )
             result = session.exec(statement)
             return result.first()
+
+    def get_last_buy(self, symbol: str, mode: str = "live") -> Optional[Trade]:
+        """
+        Convenience wrapper: returns the most recent BUY trade.
+        """
+        return self.get_last_trade(symbol=symbol, side="buy", mode=mode)
+
+    def get_last_sell(self, symbol: str, mode: str = "live") -> Optional[Trade]:
+        """
+        Convenience wrapper: returns the most recent SELL trade.
+        """
+        return self.get_last_trade(symbol=symbol, side="sell", mode=mode)
 
     # -------------------------------------------------------------------------
     # Equity
