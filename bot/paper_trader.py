@@ -115,11 +115,9 @@ class TradingBot:
         # Capture initial equity (cash + any pre-existing BTC position)
         self.initial_equity: float = compute_equity(self.capital, self.positions)
         # Track last processed candle timestamp and decision price per symbol
-        self.last_candle_ts: Dict[str, Optional[Any]] = {
-            symbol: None for symbol in settings.SYMBOLS
-        }
-        self.last_decision_price: Dict[str, Optional[float]] = {
-            symbol: None for symbol in settings.SYMBOLS
+        self.last_decision_state: Dict[str, Dict[str, Optional[Any]]] = {
+            symbol: {"candle_ts": None, "price": None}
+            for symbol in settings.SYMBOLS
         }
         self.sleep_seconds = sleep_seconds
         self.min_confidence = min_confidence
@@ -469,9 +467,13 @@ class TradingBot:
         # Get candle timestamp (index) to know if we are on the same bar
         candle_ts = getattr(latest_row, "name", None)
 
+        # Retrieve last decision state for this symbol
+        last_state = self.last_decision_state.get(symbol, {"candle_ts": None, "price": None})
+        last_candle_ts = last_state.get("candle_ts")
+        last_decision_price = last_state.get("price")
+
         # If this is the same candle as last time, only skip model decision if the move is tiny and we already have a position (micro scalping style).
-        if self.last_candle_ts.get(symbol) == candle_ts:
-            last_decision_price = self.last_decision_price.get(symbol)
+        if last_candle_ts == candle_ts:
             if last_decision_price is not None and last_decision_price > 0:
                 price_change = abs(price - last_decision_price) / last_decision_price
                 # Lower threshold for micro scalping (e.g. 0.05%)
@@ -491,8 +493,8 @@ class TradingBot:
                     return
 
         # New candle or drastic move: update tracking info
-        self.last_candle_ts[symbol] = candle_ts
-        self.last_decision_price[symbol] = price
+        self.last_decision_state[symbol]["candle_ts"] = candle_ts
+        self.last_decision_state[symbol]["price"] = price
 
         equity_before = compute_equity(self.capital, self.positions)
 
