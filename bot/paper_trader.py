@@ -9,24 +9,24 @@ from common.data_client import get_historical_ohlcv, place_order, get_binance_cl
 from bot.features import build_features_for_symbol
 from bot.storage import Storage
 
-MODEL_URL = "http://localhost:8000/predict"  # nombre del servicio en docker-compose
+MODEL_URL = "http://localhost:8000/predict"  # service name in docker-compose
 
 
 def get_model_action(features: list[float]) -> tuple[str, float]:
     """
-    Envía el vector de features al microservicio del modelo y devuelve
-    (acción, confianza).
+    Sends the feature vector to the model microservice and returns
+    (action, confidence).
 
-    acción: "buy" | "sell" | "hold"
-    confianza: probabilidad asociada a la acción elegida.Ò
+    action: "buy" | "sell" | "hold"
+    confidence: probability associated with the chosen action.
     """
     payload = {"features": features}
     try:
         resp = requests.post(MODEL_URL, json=payload, timeout=2)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        # En un MVP preferimos no romper el loop; devolvemos "hold"
-        print(f"[MODEL] Error al consultar el modelo: {exc}")
+        # In an MVP we prefer not to break the loop; return "hold"
+        print(f"[MODEL] Error querying the model: {exc}")
         return "hold", 0.0
 
     data = resp.json()
@@ -37,9 +37,9 @@ def get_model_action(features: list[float]) -> tuple[str, float]:
 
 def compute_equity(cash: float, positions: Dict[str, Optional[Dict[str, Any]]]) -> float:
     """
-    Equity = efectivo (cash) + valor de todas las posiciones abiertas.
+    Equity = cash + value of all open positions.
 
-    Cada posición es un dict con:
+    Each position is a dict with:
       - amount
       - last_price
     """
@@ -54,13 +54,13 @@ def compute_equity(cash: float, positions: Dict[str, Optional[Dict[str, Any]]]) 
 
 class TradingBot:
     """
-    Bot de trading principal.
+    Main trading bot.
 
-    Encapsula:
+    Encapsulates:
       - capital (cash),
-      - posiciones por símbolo,
-      - acceso a storage,
-      - el loop principal de ejecución.
+      - positions per symbol,
+      - access to storage,
+      - the main execution loop.
     """
 
     def __init__(
@@ -87,19 +87,19 @@ class TradingBot:
             self, symbol: str
     ) -> Optional[tuple[pd.Series, float, list[float]]]:
         """
-        Descarga OHLCV, construye el DataFrame de features y devuelve
-        (latest_row, price, features) o None si algo falla.
+        Downloads OHLCV data, builds the feature DataFrame and returns
+        (latest_row, price, features) or None if something fails.
         """
         ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=200)
         if not ohlcv:
-            print(f"[{symbol}] No se recibieron datos OHLCV.")
+            print(f"[{symbol}] No OHLCV data received.")
             return None
 
         df: pd.DataFrame = build_features_for_symbol(
             ohlcv, symbol, settings.TIMEFRAME
         )
         if df.empty:
-            print(f"[{symbol}] DataFrame de features vacío.")
+            print(f"[{symbol}] Feature DataFrame is empty.")
             return None
 
         latest_row = df.iloc[-1]
@@ -110,7 +110,7 @@ class TradingBot:
 
     def _update_position_price(self, symbol: str, price: float) -> None:
         """
-        Actualiza el último precio conocido de la posición de un símbolo, si existe.
+        Updates the last known price of the position for a symbol, if it exists.
         """
         current_pos = self.positions.get(symbol)
         if current_pos is not None:
@@ -118,10 +118,10 @@ class TradingBot:
 
     def _maybe_close_position_by_pnl(self, symbol: str, price: float) -> bool:
         """
-        Revisa el PnL latente de la posición y, si supera ciertos umbrales
-        de take profit (tp_pct) o stop loss (sl_pct), fuerza un cierre (SELL).
+        Checks the unrealized PnL of the position and, if it crosses the
+        take profit (tp_pct) or stop loss (sl_pct) thresholds, forces a close (SELL).
 
-        Devuelve True si se cerró la posición, False en caso contrario.
+        Returns True if the position was closed, False otherwise.
         """
         current_pos = self.positions.get(symbol)
         if current_pos is None or current_pos.get("side") != "buy":
@@ -144,18 +144,18 @@ class TradingBot:
         # Take profit
         if unrealized_pnl_pct >= self.tp_pct:
             print(
-                f"[{symbol}] TP alcanzado ({unrealized_pnl_pct:.3%}), "
-                f"forzando SELL por gestión de riesgo."
+                f"[{symbol}] TP reached ({unrealized_pnl_pct:.3%}), "
+                f"forcing SELL for risk management."
             )
-            # Forzamos un sell con confianza 1.0 (bypass del modelo)
+            # Force a sell with confidence 1.0 (bypass the model)
             self._handle_sell(symbol, price, confidence=1.0)
             return True
 
         # Stop loss
         if unrealized_pnl_pct <= self.sl_pct:
             print(
-                f"[{symbol}] SL alcanzado ({unrealized_pnl_pct:.3%}), "
-                f"forzando SELL por gestión de riesgo."
+                f"[{symbol}] SL reached ({unrealized_pnl_pct:.3%}), "
+                f"forcing SELL for risk management."
             )
             self._handle_sell(symbol, price, confidence=1.0)
             return True
@@ -169,28 +169,28 @@ class TradingBot:
             confidence: float,
     ) -> None:
         """
-        Intenta abrir una posición long si no existe ya una posición para el símbolo.
+        Attempts to open a long position if one does not already exist for the symbol.
         """
         if confidence <= self.min_confidence:
             return
 
         current_pos = self.positions.get(symbol)
         if current_pos is not None:
-            # Ya hay posición abierta, no abrimos otra
+            # There is already an open position, do not open another one
             return
 
         position_value = self.capital * settings.POSITION_SIZE_PCT
         if position_value <= 0:
-            print(f"[{symbol}] position_value no válido: {position_value}")
+            print(f"[{symbol}] position_value invalid: {position_value}")
             return
 
-        # Cantidad teórica que queremos comprar
+        # Theoretical amount we want to buy
         amount = position_value / price
 
-        # Envío de orden (paper o live según settings)
+        # Send order (paper or live according to settings)
         order = place_order(symbol, "buy", amount)
 
-        # Determinar datos reales de ejecución (si los hay)
+        # Determine actual execution details (if available)
         if isinstance(order, dict):
             executed_amount = float(order.get("amount") or amount)
             avg_price = float(order.get("average") or order.get("price") or price)
@@ -198,7 +198,7 @@ class TradingBot:
             fee_info = order.get("fee") or {}
             fee_currency = fee_info.get("currency")
             fee_cost = float(fee_info.get("cost") or 0.0)
-            # Para el MVP solo descontamos fee si viene en USDT
+            # For the MVP we only subtract the fee if it is in USDT
             entry_fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
         else:
             executed_amount = amount
@@ -206,7 +206,7 @@ class TradingBot:
             cost = executed_amount * avg_price
             entry_fee_usdt = 0.0
 
-        # Reducimos el capital en el costo real de la operación + fee en USDT
+        # Reduce capital by the actual operation cost + fee in USDT
         total_debit = cost + entry_fee_usdt
         self.capital -= total_debit
 
@@ -238,14 +238,14 @@ class TradingBot:
             confidence: float,
     ) -> None:
         """
-        Intenta cerrar una posición long existente.
+        Attempts to close an existing long position.
         """
         if confidence <= self.min_confidence:
             return
 
         current_pos = self.positions.get(symbol)
         if current_pos is None or current_pos.get("side") != "buy":
-            # No hay posición long que cerrar
+            # No long position to close
             return
 
         amount = float(current_pos["amount"])
@@ -266,10 +266,10 @@ class TradingBot:
             proceeds = amount * exit_price
             exit_fee_usdt = 0.0
 
-        # Coste total de entrada (incluyendo fee de entrada)
+        # Total entry cost (including entry fee)
         cost = amount * entry_price + entry_fee_usdt
 
-        # Recuperamos el capital neto de fees de salida
+        # Recover capital net of exit fees
         net_proceeds = proceeds - exit_fee_usdt
         pnl = net_proceeds - cost
         self.capital += net_proceeds
@@ -292,24 +292,24 @@ class TradingBot:
 
     def _log_equity(self) -> None:
         """
-        Calcula y registra el equity actual.
+        Computes and records the current equity.
         """
         equity = compute_equity(self.capital, self.positions)
         self.storage.log_equity(equity)
-        print(f"[BOT] Equity actual: {equity:.2f}")
+        print(f"[BOT] Current equity: {equity:.2f}")
 
     def _log_position_status(self, symbol: str) -> None:
         """
-        Muestra un resumen legible del estado de la posición para un símbolo:
-          - capital libre en USDT,
-          - BTC invertido (si lo hay) y su valor actual en USDT,
-          - PnL latente de esa posición.
+        Prints a human-readable summary of the position state for a symbol:
+          - free capital in USDT,
+          - BTC invested (if any) and its current value in USDT,
+          - unrealized PnL of that position.
         """
         pos = self.positions.get(symbol)
         if pos is None:
             print(
-                f"[{symbol}] Sin posición abierta. "
-                f"Capital libre: {self.capital:.2f} USDT"
+                f"[{symbol}] No open position. "
+                f"Free capital: {self.capital:.2f} USDT"
             )
             return
 
@@ -323,11 +323,11 @@ class TradingBot:
         unrealized_pnl = current_value_usdt - invested_usdt
 
         print(
-            f"[{symbol}] Posición: {amount:.6f} BTC, "
-            f"invertido≈{invested_usdt:.2f} USDT, "
-            f"valor actual≈{current_value_usdt:.2f} USDT, "
-            f"PnL latente≈{unrealized_pnl:.2f} USDT, "
-            f"capital libre={self.capital:.2f} USDT"
+            f"[{symbol}] Position: {amount:.6f} BTC, "
+            f"invested≈{invested_usdt:.2f} USDT, "
+            f"current value≈{current_value_usdt:.2f} USDT, "
+            f"unrealized PnL≈{unrealized_pnl:.2f} USDT, "
+            f"free capital={self.capital:.2f} USDT"
         )
 
 
@@ -381,12 +381,11 @@ class TradingBot:
 
     def _process_symbol(self, symbol: str) -> None:
         """
-        Ejecuta un ciclo completo de:
-          - obtener mercado,
-          - consultar modelo,
-          - actualizar posición,
-          - registrar equity
-        para un símbolo concreto.
+        Executes a full cycle for a given symbol:
+          - fetch market data,
+          - query the model,
+          - update the position,
+          - record equity.
         """
         market_state = self._fetch_latest_market_state(symbol)
         if market_state is None:
@@ -395,55 +394,55 @@ class TradingBot:
         latest_row, price, features = market_state
         equity_before = compute_equity(self.capital, self.positions)
 
-        # Acción del modelo
+        # Model action
         action, conf = get_model_action(features)
         print(
-            f"[{symbol}] acción modelo: {action}, conf={conf:.2f}, precio={price:.2f}"
+            f"[{symbol}] model action: {action}, conf={conf:.2f}, price={price:.2f}"
         )
 
         # Log decision (with sampling for 'hold') before mutating capital/positions
         self._maybe_log_decision(symbol, action, conf, latest_row, equity_before)
 
-        # Actualizar último precio de posición (si existe)
+        # Update last position price (if exists)
         self._update_position_price(symbol, price)
 
-        # Lógica de trading
+        # Trading logic
         if action == "buy":
             self._handle_buy(symbol, price, conf)
         elif action == "sell":
             self._handle_sell(symbol, price, conf)
 
-        # Registrar equity después de procesar el símbolo
+        # Record equity after processing the symbol
         self._log_position_status(symbol)
         self._log_equity()
 
     def run(self) -> None:
         """
-        Loop principal del bot. Recorre los símbolos definidos en settings.SYMBOLS
-        y ejecuta la lógica de trading en intervalos definidos por self.sleep_seconds.
+        Main bot loop. Iterates over symbols defined in settings.SYMBOLS
+        and runs the trading logic at intervals defined by self.sleep_seconds.
         """
-        print("[BOT] Iniciando loop de trading...")
+        print("[BOT] Starting trading loop...")
         try:
             while True:
                 for symbol in settings.SYMBOLS:
                     try:
                         self._process_symbol(symbol)
                     except Exception as symbol_exc:  # noqa: BLE001
-                        # No queremos que un símbolo rompa todo el loop
-                        print(f"[{symbol}] Error en el loop del símbolo: {symbol_exc}")
+                        # We do not want a single symbol to break the whole loop
+                        print(f"[{symbol}] Error in symbol loop: {symbol_exc}")
 
-                # Esperar al siguiente ciclo (ej. cada 5 min)
+                # Wait for the next cycle (e.g. every few seconds/minutes)
                 time.sleep(self.sleep_seconds)
 
         except KeyboardInterrupt:
-            print("[BOT] Interrupción por teclado. Cerrando bot...")
+            print("[BOT] Keyboard interrupt. Shutting down bot...")
 
         finally:
             try:
                 self.storage.close()
             except Exception:
                 pass
-            print("[BOT] Bot detenido limpiamente.")
+            print("[BOT] Bot stopped cleanly.")
 
 
 def check_if_balance():
