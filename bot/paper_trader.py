@@ -1,4 +1,5 @@
 import time
+import math
 from typing import Dict, Optional, Any
 
 import requests
@@ -68,20 +69,51 @@ class TradingBot:
             sleep_seconds: int = 30,
             min_confidence: float = 0.52,
             balance: float = 0,
+            initial_btc_amount: float = 0.0,
     ) -> None:
         self.storage = Storage()
         self.capital: float = balance
         self.positions: Dict[str, Optional[Dict[str, Any]]] = {
             symbol: None for symbol in settings.SYMBOLS
         }
+        # If we already have BTC in the account and BTC/USDT is one of the symbols,
+        # treat it as an existing long position with entry at the current market price.
+        if initial_btc_amount > 0 and "BTC/USDT" in settings.SYMBOLS:
+            try:
+                ohlcv_init = get_historical_ohlcv("BTC/USDT", settings.TIMEFRAME, limit=1)
+                if ohlcv_init:
+                    last_candle = ohlcv_init[-1]
+                    # OHLCV format: [timestamp, open, high, low, close, volume]
+                    entry_price = float(last_candle[4])
+                    self.positions["BTC/USDT"] = {
+                        "side": "buy",
+                        "amount": float(initial_btc_amount),
+                        "entry_price": entry_price,
+                        "entry_fee_usdt": 0.0,
+                        "last_price": entry_price,
+                    }
+                    print(
+                        f"[BTC/USDT] Loaded existing BTC balance as position: "
+                        f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
+                    )
+            except Exception as init_exc:  # noqa: BLE001
+                print(f"[BTC/USDT] Error initializing existing BTC position: {init_exc}")
+        # Capture initial equity (cash + any pre-existing BTC position)
+        self.initial_equity: float = compute_equity(self.capital, self.positions)
+        # Track last processed candle timestamp and decision price per symbol
+        self.last_candle_ts: Dict[str, Optional[Any]] = {
+            symbol: None for symbol in settings.SYMBOLS
+        }
+        self.last_decision_price: Dict[str, Optional[float]] = {
+            symbol: None for symbol in settings.SYMBOLS
+        }
         self.sleep_seconds = sleep_seconds
         self.min_confidence = min_confidence
 
-        self.tp_pct: float = 0.005   # +0.5% take profit
-        self.sl_pct: float = -0.01   # -1.0% stop loss
+        self.tp_pct: float = 0.003   # +0.3% take profit (micro scalping)
+        self.sl_pct: float = -0.004  # -0.4% stop loss (micro scalping)
 
-
-        print(f"[BOT] Inicializado. Capital inicial: {self.capital}")
+        print(f"[BOT] Inicializado. Capital inicial: {self.capital}, Equity inicial≈{self.initial_equity:.2f} USDT")
 
     def _fetch_latest_market_state(
             self, symbol: str
@@ -90,14 +122,23 @@ class TradingBot:
         Downloads OHLCV data, builds the feature DataFrame and returns
         (latest_row, price, features) or None if something fails.
         """
-        ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=200)
+        try:
+            ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=200)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{symbol}] Error fetching OHLCV data: {exc}")
+            return None
+
         if not ohlcv:
             print(f"[{symbol}] No OHLCV data received.")
             return None
 
-        df: pd.DataFrame = build_features_for_symbol(
-            ohlcv, symbol, settings.TIMEFRAME
-        )
+        try:
+            df: pd.DataFrame = build_features_for_symbol(
+                ohlcv, symbol, settings.TIMEFRAME
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{symbol}] Error building feature DataFrame: {exc}")
+            return None
         if df.empty:
             print(f"[{symbol}] Feature DataFrame is empty.")
             return None
@@ -167,6 +208,7 @@ class TradingBot:
             symbol: str,
             price: float,
             confidence: float,
+            position_value: Optional[float] = None,
     ) -> None:
         """
         Attempts to open a long position if one does not already exist for the symbol.
@@ -179,8 +221,11 @@ class TradingBot:
             # There is already an open position, do not open another one
             return
 
-        position_value = self.capital * settings.POSITION_SIZE_PCT
-        if position_value <= 0:
+        # Allow caller to override position_value (for dynamic sizing)
+        if position_value is None:
+            position_value = self.capital * settings.POSITION_SIZE_PCT
+
+        if position_value <= 0 or not math.isfinite(position_value):
             print(f"[{symbol}] position_value invalid: {position_value}")
             return
 
@@ -188,7 +233,11 @@ class TradingBot:
         amount = position_value / price
 
         # Send order (paper or live according to settings)
-        order = place_order(symbol, "buy", amount)
+        try:
+            order = place_order(symbol, "buy", amount)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{symbol}] Error placing BUY order: {exc}")
+            return
 
         # Determine actual execution details (if available)
         if isinstance(order, dict):
@@ -252,7 +301,11 @@ class TradingBot:
         entry_price = float(current_pos["entry_price"])
         entry_fee_usdt = float(current_pos.get("entry_fee_usdt", 0.0))
 
-        order = place_order(symbol, "sell", amount)
+        try:
+            order = place_order(symbol, "sell", amount)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{symbol}] Error placing SELL order: {exc}")
+            return
 
         if isinstance(order, dict):
             exit_price = float(order.get("average") or order.get("price") or price)
@@ -296,7 +349,14 @@ class TradingBot:
         """
         equity = compute_equity(self.capital, self.positions)
         self.storage.log_equity(equity)
-        print(f"[BOT] Current equity: {equity:.2f}")
+
+        pnl = equity - getattr(self, "initial_equity", equity)
+        pnl_pct = (pnl / self.initial_equity * 100.0) if getattr(self, "initial_equity", 0) else 0.0
+
+        print(
+            f"[BOT] Current equity (if fully liquidated): {equity:.2f} USDT, "
+            f"PnL={pnl:+.2f} USDT ({pnl_pct:+.2f}%)"
+        )
 
     def _log_position_status(self, symbol: str) -> None:
         """
@@ -392,6 +452,34 @@ class TradingBot:
             return
 
         latest_row, price, features = market_state
+        # Get candle timestamp (index) to know if we are on the same bar
+        candle_ts = getattr(latest_row, "name", None)
+
+        # If this is the same candle as last time, only skip model decision if the move is tiny and we already have a position (micro scalping style).
+        if self.last_candle_ts.get(symbol) == candle_ts:
+            last_decision_price = self.last_decision_price.get(symbol)
+            if last_decision_price is not None and last_decision_price > 0:
+                price_change = abs(price - last_decision_price) / last_decision_price
+                # Lower threshold for micro scalping (e.g. 0.05%)
+                drastic_move_threshold = 0.0005
+                current_pos = self.positions.get(symbol)
+                if current_pos is not None and price_change < drastic_move_threshold:
+                    # Same candle, small move and we already have a position:
+                    # skip a new model decision, just update status.
+                    print(
+                        f"[{symbol}] Skipping model decision: same candle, "
+                        f"price_change={price_change:.4%} "
+                        f"(<{drastic_move_threshold:.4%})"
+                    )
+                    self._update_position_price(symbol, price)
+                    self._log_position_status(symbol)
+                    self._log_equity()
+                    return
+
+        # New candle or drastic move: update tracking info
+        self.last_candle_ts[symbol] = candle_ts
+        self.last_decision_price[symbol] = price
+
         equity_before = compute_equity(self.capital, self.positions)
 
         # Model action
@@ -406,9 +494,34 @@ class TradingBot:
         # Update last position price (if exists)
         self._update_position_price(symbol, price)
 
+        # First, risk management: TP/SL based exit, independent of model action.
+        # If a position was closed here, we skip the rest of the logic for this symbol.
+        if self._maybe_close_position_by_pnl(symbol, price):
+            self._log_position_status(symbol)
+            self._log_equity()
+            return
+
         # Trading logic
         if action == "buy":
-            self._handle_buy(symbol, price, conf)
+            # Dynamic position sizing based on recent volatility
+            vol_20 = float(latest_row.get("vol_20", 0.0))
+            base_pct = settings.POSITION_SIZE_PCT
+            risk_factor = 1.0
+
+            if vol_20 > 0:
+                # Simple tiered adjustment: higher volatility -> smaller position
+                if vol_20 > 0.02:
+                    risk_factor = 0.25
+                elif vol_20 > 0.01:
+                    risk_factor = 0.5
+                elif vol_20 < 0.002:
+                    risk_factor = 1.2  # slightly larger in very low volatility
+
+            dynamic_position_value = self.capital * base_pct * risk_factor
+            # Never exceed available capital
+            dynamic_position_value = max(0.0, min(dynamic_position_value, self.capital))
+
+            self._handle_buy(symbol, price, conf, position_value=dynamic_position_value)
         elif action == "sell":
             self._handle_sell(symbol, price, conf)
 
@@ -450,15 +563,17 @@ def check_if_balance():
     balance = exchange.fetch_balance()
 
     if settings.TRADING_MODE == "live":
-        return balance['USDT']['total']
+        usdt_balance = float(balance["USDT"]["total"])
+        btc_balance = float(balance.get("BTC", {}).get("total", 0.0))
+        return usdt_balance, btc_balance
     else:
-        return settings.BASE_CAPITAL
+        # In paper mode we only care about the starting USDT capital
+        return float(settings.BASE_CAPITAL), 0.0
 
 
 def run_bot_loop() -> None:
-
-    actual_balance = check_if_balance()
-    bot = TradingBot(balance=actual_balance)
+    usdt_balance, btc_balance = check_if_balance()
+    bot = TradingBot(balance=usdt_balance, initial_btc_amount=btc_balance)
     bot.run()
 
 
