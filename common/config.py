@@ -9,9 +9,10 @@ class Settings:
     BINANCE_TESTNET: bool = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
     TRADING_MODE: str = os.getenv("TRADING_MODE", "paper")  # "paper" | "live"
     SYMBOLS = ["BTC/USDT"]
-    TIMEFRAME = "1m" # 15m
     BASE_CAPITAL = float(os.getenv("BASE_CAPITAL", "1000"))
     POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", "0.1"))  # 10%
-    TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "10080"))
+
+    TIMEFRAME = "5m" # 15m
+    TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "6000"))
 
 settings = Settings()
