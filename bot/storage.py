@@ -1,8 +1,10 @@
+import os
+
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Tuple
-import os
 
+from sqlalchemy import desc
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 
 # Default path used for SQLite fallback (when no MySQL env vars are provided)
@@ -107,6 +109,25 @@ class Storage:
         with self._get_session() as session:
             session.add(trade)
             session.commit()
+
+    def get_last_buy(self, symbol: str, mode: str = "live"):
+        """
+        Returns the most recent BUY trade for the given symbol and trading mode,
+        or None if there is no record.
+        """
+        with Session(self.engine) as session:
+            statement = (
+                select(Trade)
+                .where(
+                    Trade.symbol == symbol,
+                    Trade.side == "buy",
+                    Trade.mode == mode,
+                )
+                .order_by(desc(Trade.timestamp))
+                .limit(1)
+            )
+            result = session.exec(statement) # type: ignore[arg-type]
+            return result.first()
 
     def log_equity(self, equity: float) -> None:
         ts = datetime.utcnow().isoformat()

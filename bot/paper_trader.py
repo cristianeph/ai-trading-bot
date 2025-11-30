@@ -80,22 +80,36 @@ class TradingBot:
         # treat it as an existing long position with entry at the current market price.
         if initial_btc_amount > 0 and "BTC/USDT" in settings.SYMBOLS:
             try:
-                ohlcv_init = get_historical_ohlcv("BTC/USDT", settings.TIMEFRAME, limit=1)
-                if ohlcv_init:
+                # Prefer using the last recorded BUY trade from Storage (if any)
+                last_buy = self.storage.get_last_buy("BTC/USDT", mode=settings.TRADING_MODE)
+                entry_price: float
+
+                if last_buy is not None:
+                    entry_price = float(last_buy.price)
+                    print(
+                        f"[BTC/USDT] Loaded existing BTC using last BUY from DB: "
+                        f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
+                    )
+                else:
+                    # Fallback: use current market close price from the latest candle
+                    ohlcv_init = get_historical_ohlcv("BTC/USDT", settings.TIMEFRAME, limit=1)
+                    if not ohlcv_init:
+                        raise RuntimeError("No OHLCV data to initialize BTC position.")
                     last_candle = ohlcv_init[-1]
                     # OHLCV format: [timestamp, open, high, low, close, volume]
                     entry_price = float(last_candle[4])
-                    self.positions["BTC/USDT"] = {
-                        "side": "buy",
-                        "amount": float(initial_btc_amount),
-                        "entry_price": entry_price,
-                        "entry_fee_usdt": 0.0,
-                        "last_price": entry_price,
-                    }
                     print(
-                        f"[BTC/USDT] Loaded existing BTC balance as position: "
+                        f"[BTC/USDT] Loaded existing BTC using current market price: "
                         f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
                     )
+
+                self.positions["BTC/USDT"] = {
+                    "side": "buy",
+                    "amount": float(initial_btc_amount),
+                    "entry_price": entry_price,
+                    "entry_fee_usdt": 0.0,
+                    "last_price": entry_price,
+                }
             except Exception as init_exc:  # noqa: BLE001
                 print(f"[BTC/USDT] Error initializing existing BTC position: {init_exc}")
         # Capture initial equity (cash + any pre-existing BTC position)
