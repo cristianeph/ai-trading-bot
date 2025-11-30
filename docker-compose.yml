@@ -15,6 +15,7 @@ services:
 #      context: .
 #      dockerfile: bot/bot.Dockerfile
 #    container_name: crypto-bot
+#    restart: unless-stopped
 #    depends_on:
 #      - model
 #    env_file:
