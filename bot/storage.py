@@ -29,17 +29,6 @@ def get_db_url() -> str:
     return f"sqlite:///{DB_PATH}"
 
 
-def get_bot_type() -> str:
-    """
-    Returns the logical bot type label.
-
-    Examples:
-      - "foundational"  -> your current v1 bot
-      - "scalping"      -> future scalping bot
-    """
-    return os.getenv("BOT_TYPE", "foundational")
-
-
 class Trade(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
@@ -90,12 +79,12 @@ class Storage:
         - close()
     """
 
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, bot_type: str, db_path: Path = DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
 
         self.db_url = get_db_url()
-        self.bot_type = get_bot_type()
+        self.bot_type = bot_type
 
         print("Db engine detected:", self.db_url)
         print("Bot type:", self.bot_type)

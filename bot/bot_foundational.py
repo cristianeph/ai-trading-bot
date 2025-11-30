@@ -92,7 +92,7 @@ class TradingBot:
             balance: float = 0,
             initial_btc_amount: float = 0.0,
     ) -> None:
-        self.storage = Storage()
+        self.storage = Storage(bot_type="foundational")
         self.capital: float = balance
         self.positions: Dict[str, Optional[Position]] = {
             symbol: None for symbol in settings.SYMBOLS

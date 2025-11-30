@@ -11,4 +11,4 @@ COPY bot ./bot
 ENV PYTHONPATH=/app
 
 # Variables de entorno para producción se pasan en docker-compose
-CMD ["python", "-m", "bot.paper_trader"]
+CMD ["python", "-m", "bot.bot_foundational"]
