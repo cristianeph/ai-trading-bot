@@ -30,3 +30,8 @@ To check docker container logs
 To stop all containers
 
 `docker compose down`
+
+# 3. For Db versioning
+alembic init migrations
+alembic revision -m "baseline existing schema"
+alembic stamp head

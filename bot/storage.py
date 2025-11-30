@@ -57,6 +57,8 @@ class Decision(SQLModel, table=True):
     vol_20: float
     mode: str              # "paper" / "live"
     equity_before: Optional[float] = None
+    price: Optional[float] = None
+    candle_ts: Optional[str] = None
 
 
 class Storage:
@@ -146,6 +148,8 @@ class Storage:
         vol_20: float,
         mode: str,
         equity_before: Optional[float] = None,
+        price: Optional[float] = None,
+        candle_ts: Optional[str] = None,
     ) -> None:
         """
         Persist a model decision and its feature context.
@@ -155,6 +159,8 @@ class Storage:
           - feature values (ma_ratio, rsi_14, vol_20)
           - mode ("paper" / "live")
           - equity_before: total equity right before applying the decision
+          - price: market price at the moment of the decision
+          - candle_ts: candle timestamp (as string) used for this decision
         """
         ts = datetime.utcnow().isoformat()
         decision = Decision(
@@ -167,6 +173,8 @@ class Storage:
             vol_20=vol_20,
             mode=mode,
             equity_before=equity_before,
+            price=price,
+            candle_ts=candle_ts,
         )
         with self._get_session() as session:
             session.add(decision)

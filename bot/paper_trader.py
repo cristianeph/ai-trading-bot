@@ -464,9 +464,11 @@ class TradingBot:
             confidence: float,
             latest_row: pd.Series,
             equity_before: float,
+            price: float,
+            candle_ts: Any,
     ) -> None:
         """
-        Log model decisions with sampling for 'hold':
+        Log model decisions (including price and candle timestamp) with sampling for 'hold':
           - always log 'buy' and 'sell'
           - for 'hold':
               * log if confidence is far from 0.5 (high-conviction hold)
@@ -493,6 +495,9 @@ class TradingBot:
         rsi_14 = float(latest_row.get("rsi_14", 0.0))
         vol_20 = float(latest_row.get("vol_20", 0.0))
 
+        # Normalize candle_ts to a string for storage (trainer v2 can parse it)
+        candle_ts_str = str(candle_ts) if candle_ts is not None else None
+
         self.storage.log_decision(
             symbol=symbol,
             action=action,
@@ -502,6 +507,8 @@ class TradingBot:
             vol_20=vol_20,
             mode=settings.TRADING_MODE,
             equity_before=equity_before,
+            price=price,
+            candle_ts=candle_ts_str
         )
 
     def _process_symbol(self, symbol: str) -> None:
@@ -556,7 +563,15 @@ class TradingBot:
         )
 
         # Log decision (with sampling for 'hold') before mutating capital/positions
-        self._maybe_log_decision(symbol, action, conf, latest_row, equity_before)
+        self._maybe_log_decision(
+            symbol=symbol,
+            action=action,
+            confidence=conf,
+            latest_row=latest_row,
+            equity_before=equity_before,
+            price=price,
+            candle_ts=candle_ts,
+        )
 
         # Update last position price (if exists)
         self._update_position_price(symbol, price)
