@@ -1,9 +1,30 @@
 import time
 import math
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, TypedDict, cast
 
 import requests
 import pandas as pd
+
+
+# --- Type aliases and configuration constants for clarity ---
+
+class Position(TypedDict, total=False):
+    side: str
+    amount: float
+    entry_price: float
+    entry_fee_usdt: float
+    last_price: float
+
+
+class DecisionState(TypedDict, total=False):
+    candle_ts: Any
+    price: Optional[float]
+
+
+# Thresholds and sampling parameters
+DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05% intra-candle move for "no-op"
+HOLD_CONF_MARGIN: float = 0.10  # |conf - 0.5| > 0.10 => high-conviction hold
+HOLD_SAMPLE_EVERY_MIN: int = 10  # log 1 out of 10 minutes for neutral holds
 
 from common.config import settings
 from common.data_client import get_historical_ohlcv, place_order, get_binance_client
@@ -36,7 +57,7 @@ def get_model_action(features: list[float]) -> tuple[str, float]:
     return action, confidence
 
 
-def compute_equity(cash: float, positions: Dict[str, Optional[Dict[str, Any]]]) -> float:
+def compute_equity(cash: float, positions: Dict[str, Optional[Position]]) -> float:
     """
     Equity = cash + value of all open positions.
 
@@ -73,7 +94,7 @@ class TradingBot:
     ) -> None:
         self.storage = Storage()
         self.capital: float = balance
-        self.positions: Dict[str, Optional[Dict[str, Any]]] = {
+        self.positions: Dict[str, Optional[Position]] = {
             symbol: None for symbol in settings.SYMBOLS
         }
         # If we already have BTC in the account and BTC/USDT is one of the symbols,
@@ -103,29 +124,54 @@ class TradingBot:
                         f"amount={initial_btc_amount:.6f}, entry≈{entry_price:.2f}"
                     )
 
-                self.positions["BTC/USDT"] = {
-                    "side": "buy",
-                    "amount": float(initial_btc_amount),
-                    "entry_price": entry_price,
-                    "entry_fee_usdt": 0.0,
-                    "last_price": entry_price,
-                }
+                self.positions["BTC/USDT"] = cast(
+                    Position,
+                    {
+                        "side": "buy",
+                        "amount": float(initial_btc_amount),
+                        "entry_price": entry_price,
+                        "entry_fee_usdt": 0.0,
+                        "last_price": entry_price,
+                    },
+                )
             except Exception as init_exc:  # noqa: BLE001
                 print(f"[BTC/USDT] Error initializing existing BTC position: {init_exc}")
         # Capture initial equity (cash + any pre-existing BTC position)
         self.initial_equity: float = compute_equity(self.capital, self.positions)
         # Track last processed candle timestamp and decision price per symbol
-        self.last_decision_state: Dict[str, Dict[str, Optional[Any]]] = {
+        self.last_decision_state: Dict[str, DecisionState] = {
             symbol: {"candle_ts": None, "price": None}
             for symbol in settings.SYMBOLS
         }
         self.sleep_seconds = sleep_seconds
         self.min_confidence = min_confidence
 
-        self.tp_pct: float = 0.003   # +0.3% take profit (micro scalping)
+        self.tp_pct: float = 0.003  # +0.3% take profit (micro scalping)
         self.sl_pct: float = -0.004  # -0.4% stop loss (micro scalping)
 
-        print(f"[BOT] Inicializado. Capital inicial: {self.capital}, Equity inicial≈{self.initial_equity:.2f} USDT")
+        print(
+            f"[BOT] Inicializado. Capital inicial: {self.capital}, "
+            f"Equity inicial≈{self.initial_equity:.2f} USDT"
+        )
+
+    def _compute_unrealized_pnl(
+            self,
+            amount: float,
+            entry_price: float,
+            entry_fee_usdt: float,
+            current_price: float,
+    ) -> tuple[float, float, float, float]:
+        """
+        Helper to compute invested capital, current value, unrealized PnL (USDT)
+        and unrealized PnL (percentage).
+        """
+        invested_usdt = amount * entry_price + entry_fee_usdt
+        current_value_usdt = amount * current_price
+        unrealized_pnl_usdt = current_value_usdt - invested_usdt
+        unrealized_pnl_pct = (
+            unrealized_pnl_usdt / invested_usdt if invested_usdt > 0 else 0.0
+        )
+        return invested_usdt, current_value_usdt, unrealized_pnl_usdt, unrealized_pnl_pct
 
     def _fetch_latest_market_state(
             self, symbol: str
@@ -151,6 +197,7 @@ class TradingBot:
         except Exception as exc:  # noqa: BLE001
             print(f"[{symbol}] Error building feature DataFrame: {exc}")
             return None
+
         if df.empty:
             print(f"[{symbol}] Feature DataFrame is empty.")
             return None
@@ -187,11 +234,13 @@ class TradingBot:
         if amount <= 0 or entry_price <= 0:
             return False
 
-        invested_usdt = amount * entry_price + entry_fee_usdt
-        current_value_usdt = amount * price
-        unrealized_pnl_usdt = current_value_usdt - invested_usdt
-        unrealized_pnl_pct = (
-            unrealized_pnl_usdt / invested_usdt if invested_usdt > 0 else 0.0
+        invested_usdt, current_value_usdt, unrealized_pnl_usdt, unrealized_pnl_pct = (
+            self._compute_unrealized_pnl(
+                amount=amount,
+                entry_price=entry_price,
+                entry_fee_usdt=entry_fee_usdt,
+                current_price=price,
+            )
         )
 
         # Take profit
@@ -271,13 +320,16 @@ class TradingBot:
         total_debit = cost + entry_fee_usdt
         self.capital -= total_debit
 
-        self.positions[symbol] = {
-            "side": "buy",
-            "amount": executed_amount,
-            "entry_price": avg_price,
-            "entry_fee_usdt": entry_fee_usdt,
-            "last_price": avg_price,
-        }
+        self.positions[symbol] = cast(
+            Position,
+            {
+                "side": "buy",
+                "amount": executed_amount,
+                "entry_price": avg_price,
+                "entry_fee_usdt": entry_fee_usdt,
+                "last_price": avg_price,
+            },
+        )
 
         self.storage.log_trade(
             symbol=symbol,
@@ -390,9 +442,12 @@ class TradingBot:
         last_price = float(pos.get("last_price", entry_price))
         entry_fee_usdt = float(pos.get("entry_fee_usdt", 0.0))
 
-        invested_usdt = amount * entry_price + entry_fee_usdt
-        current_value_usdt = amount * last_price
-        unrealized_pnl = current_value_usdt - invested_usdt
+        invested_usdt, current_value_usdt, unrealized_pnl, _ = self._compute_unrealized_pnl(
+            amount=amount,
+            entry_price=entry_price,
+            entry_fee_usdt=entry_fee_usdt,
+            current_price=last_price,
+        )
 
         print(
             f"[{symbol}] Position: {amount:.6f} BTC, "
@@ -401,7 +456,6 @@ class TradingBot:
             f"unrealized PnL≈{unrealized_pnl:.2f} USDT, "
             f"free capital={self.capital:.2f} USDT"
         )
-
 
     def _maybe_log_decision(
             self,
@@ -423,14 +477,13 @@ class TradingBot:
 
         # Sampling strategy for 'hold'
         if action == "hold":
-            hold_conf_margin = 0.10  # high-conviction hold if |conf - 0.5| > 0.10
-            hold_sample_every = 10  # log 1 out of 10 minutes as background context
-
-            if abs(confidence - 0.5) > hold_conf_margin:
+            if abs(confidence - 0.5) > HOLD_CONF_MARGIN:
+                # High-conviction hold: far from 0.5
                 should_log = True
             else:
+                # Neutral holds: sample periodically
                 current_minute = int(time.time() // 60)
-                if current_minute % hold_sample_every == 0:
+                if current_minute % HOLD_SAMPLE_EVERY_MIN == 0:
                     should_log = True
 
         if not should_log:
@@ -476,16 +529,14 @@ class TradingBot:
         if last_candle_ts == candle_ts:
             if last_decision_price is not None and last_decision_price > 0:
                 price_change = abs(price - last_decision_price) / last_decision_price
-                # Lower threshold for micro scalping (e.g. 0.05%)
-                drastic_move_threshold = 0.0005
                 current_pos = self.positions.get(symbol)
-                if current_pos is not None and price_change < drastic_move_threshold:
+                if current_pos is not None and price_change < DRASTIC_MOVE_THRESHOLD:
                     # Same candle, small move and we already have a position:
                     # skip a new model decision, just update status.
                     print(
                         f"[{symbol}] Skipping model decision: same candle, "
                         f"price_change={price_change:.4%} "
-                        f"(<{drastic_move_threshold:.4%})"
+                        f"(<{DRASTIC_MOVE_THRESHOLD:.4%})"
                     )
                     self._update_position_price(symbol, price)
                     self._log_position_status(symbol)
