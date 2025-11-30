@@ -63,6 +63,18 @@ class Decision(SQLModel, table=True):
     bot_type: str = Field(default=None, index=True)
 
 
+class OpenPosition(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: str = Field(index=True)
+    symbol: str
+    side: str           # "buy" for our current scalper
+    amount: float
+    entry_price: float
+    entry_fee_usdt: float = 0.0
+    mode: str = Field(index=True)      # "paper" / "live"
+    bot_type: str = Field(default=None, index=True)
+
+
 class Storage:
     """
     Simple storage wrapper using SQLModel (ORM over SQLite or MySQL).
@@ -240,6 +252,52 @@ class Storage:
         with self._get_session() as session:
             session.add(decision)
             session.commit()
+
+    def add_open_position(
+            self,
+            *,
+            symbol: str,
+            side: str,
+            amount: float,
+            entry_price: float,
+            entry_fee_usdt: float = 0.0,
+            mode: str = "paper",
+            bot_type: Optional[str] = None,
+    ) -> int:
+        ts = datetime.utcnow().isoformat()
+        effective_bot_type = bot_type or self.bot_type
+
+        row = OpenPosition(
+            timestamp=ts,
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            entry_price=entry_price,
+            entry_fee_usdt=entry_fee_usdt,
+            mode=mode,
+            bot_type=effective_bot_type,
+        )
+        with self._get_session() as session:
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return row.id
+
+    def remove_open_position(self, position_id: int) -> None:
+        with self._get_session() as session:
+            row = session.get(OpenPosition, position_id)
+            if row is not None:
+                session.delete(row)
+                session.commit()
+
+    def get_open_positions(self, mode: Optional[str] = None) -> List[OpenPosition]:
+        with self._get_session() as session:
+            stmt = select(OpenPosition).where(OpenPosition.bot_type == self.bot_type)
+            if mode is not None:
+                stmt = stmt.where(OpenPosition.mode == mode)
+            stmt = stmt.order_by(OpenPosition.timestamp.asc())
+            rows = session.exec(stmt).all()
+            return list(rows)
 
     # -------------------------------------------------------------------------
     # Lifecycle
