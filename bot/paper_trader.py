@@ -330,6 +330,55 @@ class TradingBot:
             f"capital libre={self.capital:.2f} USDT"
         )
 
+
+    def _maybe_log_decision(
+            self,
+            symbol: str,
+            action: str,
+            confidence: float,
+            latest_row: pd.Series,
+            equity_before: float,
+    ) -> None:
+        """
+        Log model decisions with sampling for 'hold':
+          - always log 'buy' and 'sell'
+          - for 'hold':
+              * log if confidence is far from 0.5 (high-conviction hold)
+              * or periodically (every N minutes) to avoid excessive volume
+        """
+        # Always log buy/sell decisions
+        should_log = action in ("buy", "sell")
+
+        # Sampling strategy for 'hold'
+        if action == "hold":
+            hold_conf_margin = 0.10  # high-conviction hold if |conf - 0.5| > 0.10
+            hold_sample_every = 10  # log 1 out of 10 minutes as background context
+
+            if abs(confidence - 0.5) > hold_conf_margin:
+                should_log = True
+            else:
+                current_minute = int(time.time() // 60)
+                if current_minute % hold_sample_every == 0:
+                    should_log = True
+
+        if not should_log:
+            return
+
+        ma_ratio = float(latest_row.get("ma_ratio", 0.0))
+        rsi_14 = float(latest_row.get("rsi_14", 0.0))
+        vol_20 = float(latest_row.get("vol_20", 0.0))
+
+        self.storage.log_decision(
+            symbol=symbol,
+            action=action,
+            confidence=confidence,
+            ma_ratio=ma_ratio,
+            rsi_14=rsi_14,
+            vol_20=vol_20,
+            mode=settings.TRADING_MODE,
+            equity_before=equity_before,
+        )
+
     def _process_symbol(self, symbol: str) -> None:
         """
         Ejecuta un ciclo completo de:
@@ -344,12 +393,16 @@ class TradingBot:
             return
 
         latest_row, price, features = market_state
+        equity_before = compute_equity(self.capital, self.positions)
 
         # Acción del modelo
         action, conf = get_model_action(features)
         print(
             f"[{symbol}] acción modelo: {action}, conf={conf:.2f}, precio={price:.2f}"
         )
+
+        # Log decision (with sampling for 'hold') before mutating capital/positions
+        self._maybe_log_decision(symbol, action, conf, latest_row, equity_before)
 
         # Actualizar último precio de posición (si existe)
         self._update_position_price(symbol, price)

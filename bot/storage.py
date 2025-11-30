@@ -11,7 +11,9 @@ DB_PATH = Path("data") / "trading.db"
 def get_db_url() -> str:
     """
     Returns the database connection URL for SQLModel/SQLAlchemy.
-    - If environment variables MYSQL_HOST are present
+
+    - If environment variables MYSQL_HOST (and optionally MYSQL_USER, MYSQL_PASSWORD, MYSQL_DB, MYSQL_PORT) are present,
+      MySQL is used (for example, an AWS RDS instance).
     - Otherwise SQLite is used locally at data/trading.db.
     """
     mysql_host = os.getenv("MYSQL_HOST")
@@ -40,6 +42,19 @@ class Equity(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
     equity: float
+
+
+class Decision(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: str = Field(index=True)
+    symbol: str
+    action: str            # "buy" / "sell" / "hold"
+    confidence: float
+    ma_ratio: float
+    rsi_14: float
+    vol_20: float
+    mode: str              # "paper" / "live"
+    equity_before: Optional[float] = None
 
 
 class Storage:
@@ -98,6 +113,42 @@ class Storage:
         equity_row = Equity(timestamp=ts, equity=equity)
         with self._get_session() as session:
             session.add(equity_row)
+            session.commit()
+
+    def log_decision(
+        self,
+        symbol: str,
+        action: str,
+        confidence: float,
+        ma_ratio: float,
+        rsi_14: float,
+        vol_20: float,
+        mode: str,
+        equity_before: Optional[float] = None,
+    ) -> None:
+        """
+        Persist a model decision and its feature context.
+
+        We log:
+          - symbol, action, confidence
+          - feature values (ma_ratio, rsi_14, vol_20)
+          - mode ("paper" / "live")
+          - equity_before: total equity right before applying the decision
+        """
+        ts = datetime.utcnow().isoformat()
+        decision = Decision(
+            timestamp=ts,
+            symbol=symbol,
+            action=action,
+            confidence=confidence,
+            ma_ratio=ma_ratio,
+            rsi_14=rsi_14,
+            vol_20=vol_20,
+            mode=mode,
+            equity_before=equity_before,
+        )
+        with self._get_session() as session:
+            session.add(decision)
             session.commit()
 
     def get_equity_curve(self) -> List[Tuple[str, float]]:
