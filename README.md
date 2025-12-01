@@ -38,6 +38,6 @@ Only for initialize migrations the first time project runs:
 
 To make changes on sqlmodel entities:
 
-`alembic revision -m "baseline existing schema"`
+`alembic revision --autogenerate -m "adding new fields to decisions"`
 
 `alembic stamp head`
