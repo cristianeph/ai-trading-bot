@@ -6,7 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY common ./common
-COPY bot ./bot
+COPY bot-scalping ./bot
 
 ENV PYTHONPATH=/app
 
