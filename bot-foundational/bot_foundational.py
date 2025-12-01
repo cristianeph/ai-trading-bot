@@ -1,10 +1,10 @@
-# bot/foundational_bot.py
-from __future__ import annotations
-
 import math
-from typing import Optional, Any, cast, NamedTuple
-
 import pandas as pd
+
+from dotenv import load_dotenv
+load_dotenv(".env.foundational")
+
+from typing import Optional, Any, cast, NamedTuple
 
 from common.logger import BotLogger
 from common.config import settings
@@ -89,7 +89,7 @@ class FoundationalTradingBot(BaseTradingBot):
             recent than last SELL) for this bot_type and mode.
 
         Otherwise, the existing BTC balance is treated as external/dust and is
-        not managed as an open position by this bot.
+        not managed as an open position by this bot-foundational.
         """
 
         try:
@@ -113,7 +113,7 @@ class FoundationalTradingBot(BaseTradingBot):
             if last_buy is None:
                 self.log.info(
                     "[BTC/USDT] Existing BTC balance detected but no BUY trades "
-                    "for this bot/mode. Treating it as external balance; "
+                    "for this bot-foundational/mode. Treating it as external balance; "
                     "no managed position will be created."
                 )
                 return
@@ -122,11 +122,11 @@ class FoundationalTradingBot(BaseTradingBot):
                 self.log.info(
                     "[BTC/USDT] Existing BTC balance detected but last SELL is "
                     "more recent than or equal to last BUY. Assuming no open "
-                    "bot-managed long position; will not create a managed position."
+                    "bot-foundational-managed long position; will not create a managed position."
                 )
                 return
 
-            # At this point we consider there is an open long from the bot's perspective.
+            # At this point we consider there is an open long from the bot-foundational's perspective.
             entry_price = float(last_buy.price)
             self.log.info(
                 f"[BTC/USDT] Loaded existing BTC using last BUY from DB: "
