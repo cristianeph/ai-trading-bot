@@ -14,6 +14,7 @@ from common.base_bot import (
     Position,
     DecisionState,
 )
+from common.storage import Storage
 
 # ------------------------------------------------------------------ #
 # Scalping-specific parameters                                      #
@@ -59,10 +60,10 @@ class ScalpingTradingBot(BaseTradingBot):
     def __init__(
         self,
         *,
-        sleep_seconds: int = 5,
-        min_confidence: float = 0.50,
+        sleep_seconds: int = 30,
+        min_confidence: float = 0.52,
         balance: float = 0.0,
-        storage=None,
+        storage: Optional[Storage] = None,
         model_client: Optional[ModelClient] = None,
         tp_pct: float = DEFAULT_SCALP_TP_PCT,
         sl_pct: float = DEFAULT_SCALP_SL_PCT,
@@ -635,7 +636,11 @@ def run_scalping_bot_loop() -> None:
     else:
         usdt_balance = float(settings.BASE_CAPITAL)
 
-    bot = ScalpingTradingBot(balance=usdt_balance)
+    bot = ScalpingTradingBot(
+        balance=usdt_balance,
+        sleep_seconds=30,
+        min_confidence=0.52,
+    )
     bot.run()
 
 
