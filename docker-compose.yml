@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   model:
     build:
@@ -10,14 +8,13 @@ services:
     ports:
       - "8000:8000"
 
-#  bot:
-#    build:
-#      context: .
-#      dockerfile: bot/bot.Dockerfile
-#    container_name: crypto-bot
-#    restart: unless-stopped
-#    depends_on:
-#      - model
-#    env_file:
-#      - .env
-#    restart: unless-stopped
+  bot:
+    build:
+      context: .
+      dockerfile: bot-foundational/bot-foundational.Dockerfile
+    container_name: crypto-bot-foundational
+    restart: unless-stopped
+    depends_on:
+      - model
+    env_file:
+      - .env.foundational
