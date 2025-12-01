@@ -15,4 +15,6 @@ class Settings:
     TIMEFRAME = "5m" # 15m
     TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "6000"))
 
+    MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8000/predict")
+
 settings = Settings()

@@ -65,9 +65,9 @@ class BaseTradingBot(ABC):
         model_client: Optional[ModelClient] = None,
         bot_type: str = "base",
     ) -> None:
-        self.log = BotLogger("foundational_bot")
+        self.log = BotLogger(self.__class__.__name__)
         self.storage = storage or Storage(bot_type=bot_type)
-        self.model_client = model_client or ModelClient("http://localhost:8000/predict")
+        self.model_client = model_client or ModelClient(settings.MODEL_URL)
 
         self.capital: float = balance
         self.positions: Dict[str, Optional[Position]] = {
