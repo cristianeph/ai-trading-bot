@@ -214,7 +214,7 @@ class FoundationalTradingBot(BaseTradingBot):
         Validate and normalize the desired position value for a new long.
         Returns the effective position value or None if the trade should be skipped.
         """
-        if confidence <= self.min_confidence:
+        if confidence < self.min_confidence:
             return None
 
         if self.positions.get(symbol) is not None:
@@ -552,7 +552,7 @@ def run_bot_loop() -> None:
         balance=usdt_balance,
         initial_btc_amount=btc_balance,
         sleep_seconds=30,
-        min_confidence=0.52,
+        min_confidence=0.51,
     )
     bot.run()
 
