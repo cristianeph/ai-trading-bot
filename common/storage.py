@@ -62,6 +62,11 @@ class Decision(SQLModel, table=True):
     candle_ts: Optional[str] = None
     bot_type: str = Field(default=None, index=True)
 
+    outcome_pnl_usdt: Optional[float] = None
+    outcome_pnl_pct: Optional[float] = None
+    outcome_equity_delta: Optional[float] = None
+    outcome_label: Optional[str] = Field(default=None, index=True)
+
 
 class OpenPosition(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -296,6 +301,28 @@ class Storage:
             if mode is not None:
                 stmt = stmt.where(OpenPosition.mode == mode)
             stmt = stmt.order_by(OpenPosition.timestamp.asc())
+            rows = session.exec(stmt).all()
+            return list(rows)
+
+    def get_decisions_without_outcome(
+            self,
+            symbol: Optional[str] = None,
+            mode: Optional[str] = None,
+            limit: int = 1000,
+    ) -> List[Decision]:
+        """Return recent decisions that do not have an outcome_label yet.
+
+        This is used by offline labeling jobs to attach PnL / outcome info
+        after trades have been closed.
+        """
+        with self._get_session() as session:
+            stmt = select(Decision).where(Decision.bot_type == self.bot_type)
+            stmt = stmt.where(Decision.outcome_label.is_(None))
+            if symbol is not None:
+                stmt = stmt.where(Decision.symbol == symbol)
+            if mode is not None:
+                stmt = stmt.where(Decision.mode == mode)
+            stmt = stmt.order_by(Decision.timestamp.desc()).limit(limit)
             rows = session.exec(stmt).all()
             return list(rows)
 
