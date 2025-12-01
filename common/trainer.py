@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from bot.features import build_features_for_symbol
+from common.features import build_features_for_symbol
 from common.data_client import get_historical_ohlcv
 from common.config import settings
 

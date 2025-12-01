@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Any, TypedDict, cast
+from typing import Dict, Optional, Any, TypedDict
 
 import pandas as pd
 
@@ -10,7 +10,7 @@ from common.config import settings
 from common.data_client import get_historical_ohlcv
 from common.model_client import ModelClient
 from common.logger import BotLogger
-from bot.features import build_features_for_symbol
+from common.features import build_features_for_symbol
 from bot.storage import Storage
 
 

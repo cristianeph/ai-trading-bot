@@ -1,10 +1,9 @@
 # common/backtest.py
 
 import joblib
-import numpy as np
 
 from pathlib import Path
-from bot.features import build_features_for_symbol
+from common.features import build_features_for_symbol
 from common.data_client import get_historical_ohlcv
 from common.config import settings
 
