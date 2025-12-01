@@ -84,6 +84,23 @@ class ScalpingTradingBot(BaseTradingBot):
         # Override positions: now each symbol has a list[Position]
         self.positions = {symbol: [] for symbol in settings.SYMBOLS}
 
+        # Restore open positions from storage/database
+        open_positions = self.storage.get_open_positions(mode=settings.TRADING_MODE)
+        for row in open_positions:
+            pos = cast(
+                Position,
+                {
+                    "side": row.side,
+                    "amount": row.amount,
+                    "entry_price": row.entry_price,
+                    "entry_fee_usdt": row.entry_fee_usdt,
+                    "last_price": row.entry_price,
+                    "storage_id": row.id,
+                },
+            )
+            if row.symbol in self.positions:
+                self.positions[row.symbol].append(pos)
+
         # TP/SL for this strategy
         self.tp_pct = tp_pct
         self.sl_pct = sl_pct
@@ -95,8 +112,8 @@ class ScalpingTradingBot(BaseTradingBot):
             DEFAULT_SCALP_POSITION_SIZE_PCT,
         )
 
-        # Initial equity = pure cash at start (no pre-loaded positions for this scalper)
-        self.initial_equity: float = self.capital
+        # Initial equity includes any restored open positions from the DB
+        self.initial_equity: float = self._compute_equity()
 
         self.log.info(
             f"[BOT:scalping] Initialized. Initial capital: {self.capital:.2f}, "
@@ -282,6 +299,16 @@ class ScalpingTradingBot(BaseTradingBot):
             },
         )
 
+        storage_id = self.storage.add_open_position(
+            symbol=symbol,
+            side="buy",
+            amount=executed_amount,
+            entry_price=avg_price,
+            entry_fee_usdt=entry_fee_usdt,
+            mode=settings.TRADING_MODE,
+        )
+        pos["storage_id"] = storage_id
+
         self.storage.log_trade(
             symbol=symbol,
             side="buy",
@@ -345,6 +372,10 @@ class ScalpingTradingBot(BaseTradingBot):
             mode=settings.TRADING_MODE,
             pnl=pnl,
         )
+
+        storage_id = cast(Optional[int], pos.get("storage_id"))
+        if storage_id is not None:
+            self.storage.remove_open_position(storage_id)
 
         self.log.info(
             f"[{symbol}] Close long (scalp): amount={amount:.6f}, "
