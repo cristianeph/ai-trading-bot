@@ -12,11 +12,10 @@ from common.data_client import place_order, get_binance_client
 from common.base_bot import (
     BaseTradingBot,
     Position,
-    DecisionState,
     compute_equity,
 )
 from common.model_client import ModelClient
-from bot.storage import Storage
+from common.storage import Storage
 
 # Strategy-specific thresholds
 DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05%
@@ -92,7 +91,6 @@ class FoundationalTradingBot(BaseTradingBot):
         Otherwise, the existing BTC balance is treated as external/dust and is
         not managed as an open position by this bot.
         """
-        from common.data_client import get_historical_ohlcv
 
         try:
             min_amount = MIN_TRADE_AMOUNT.get("BTC/USDT")

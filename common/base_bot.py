@@ -11,7 +11,7 @@ from common.data_client import get_historical_ohlcv
 from common.model_client import ModelClient
 from common.logger import BotLogger
 from common.features import build_features_for_symbol
-from bot.storage import Storage
+from common.storage import Storage
 
 
 class Position(TypedDict, total=False):

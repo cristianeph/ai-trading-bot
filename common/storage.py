@@ -7,7 +7,7 @@ from sqlalchemy import desc
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 
 # Default path used for SQLite fallback (when no MySQL env vars are provided)
-DB_PATH = Path("data") / "trading.db"
+DB_PATH = Path("../bot/data") / "trading.db"
 
 
 def get_db_url() -> str:

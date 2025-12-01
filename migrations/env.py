@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-from bot.storage import get_db_url
+from common.storage import get_db_url
 
 config = context.config
 
