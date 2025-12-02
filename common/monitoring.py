@@ -11,7 +11,7 @@ def init_sentry() -> None:
     if not dsn:
         return  # do nothing if not configured
 
-    # Logs integration: envía a Sentry todo lo que sea ERROR+
+    # Logs integration: sends all ERRORs to sentry
     sentry_logging = LoggingIntegration(
         level=logging.INFO,         # captures all logs
         event_level=logging.ERROR,   # only generates events whenever we want (see below)
