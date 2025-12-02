@@ -218,9 +218,17 @@ class FoundationalTradingBot(BaseTradingBot):
         Returns the effective position value or None if the trade should be skipped.
         """
         if confidence < self.min_confidence:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: conf={confidence:.2f} < "
+                f"min_conf={self.min_confidence:.2f}"
+            )
             return None
 
         if self.positions.get(symbol) is not None:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: position already open, "
+                f"conf={confidence:.2f}"
+            )
             return None
 
         if position_value is None:
@@ -361,11 +369,19 @@ class FoundationalTradingBot(BaseTradingBot):
         price: float,
         confidence: float,
     ) -> None:
-        if confidence <= self.min_confidence:
+        if confidence < self.min_confidence:
+            self.log.info(
+                f"[{symbol}] Skipping SELL: conf={confidence:.2f} < "
+                f"min_conf={self.min_confidence:.2f}"
+            )
             return
 
         current_pos = self.positions.get(symbol)
         if current_pos is None or current_pos.get("side") != "buy":
+            self.log.info(
+                f"[{symbol}] Skipping SELL: no open long position "
+                f"(conf={confidence:.2f})"
+            )
             return
 
         amount = float(current_pos["amount"])
