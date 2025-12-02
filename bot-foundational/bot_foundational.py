@@ -16,6 +16,9 @@ from common.base_bot import (
 )
 from common.model_client import ModelClient
 from common.storage import Storage
+from common.monitoring import init_sentry
+
+init_sentry()
 
 # Strategy-specific thresholds
 DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05%
