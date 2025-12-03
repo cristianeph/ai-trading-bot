@@ -51,12 +51,12 @@ class Decision(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
     symbol: str
-    action: str            # "buy" / "sell" / "hold"
+    action: str  # "buy" / "sell" / "hold"
     confidence: float
     ma_ratio: float
     rsi_14: float
     vol_20: float
-    mode: str              # "paper" / "live"
+    mode: str  # "paper" / "live"
     equity_before: Optional[float] = None
     price: Optional[float] = None
     candle_ts: Optional[str] = None
@@ -68,15 +68,22 @@ class Decision(SQLModel, table=True):
     outcome_label: Optional[str] = Field(default=None, index=True)
 
 
+class BotConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bot_type: str = Field(index=True)  # e.g. "foundational", "scalping"
+    key: str = Field(index=True)  # e.g. "min_confidence", "tp_pct"
+    value: str  # stored as string, cast on read
+
+
 class OpenPosition(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
     symbol: str
-    side: str           # "buy" for our current scalper
+    side: str  # "buy" for our current scalper
     amount: float
     entry_price: float
     entry_fee_usdt: float = 0.0
-    mode: str = Field(index=True)      # "paper" / "live"
+    mode: str = Field(index=True)  # "paper" / "live"
     bot_type: str = Field(default=None, index=True)
 
 
@@ -122,14 +129,14 @@ class Storage:
     # Trades
     # -------------------------------------------------------------------------
     def log_trade(
-        self,
-        symbol: str,
-        side: str,
-        price: float,
-        amount: float,
-        mode: str = "paper",
-        pnl: Optional[float] = None,
-        bot_type: Optional[str] = None,
+            self,
+            symbol: str,
+            side: str,
+            price: float,
+            amount: float,
+            mode: str = "paper",
+            pnl: Optional[float] = None,
+            bot_type: Optional[str] = None,
     ) -> None:
         """
         Persist a trade in the DB.
@@ -156,10 +163,10 @@ class Storage:
             session.commit()
 
     def get_last_trade(
-        self,
-        symbol: str,
-        side: str,
-        mode: str = "live",
+            self,
+            symbol: str,
+            side: str,
+            mode: str = "live",
     ) -> Optional[Trade]:
         """
         Returns the most recent trade for the given symbol, side, trading mode,
@@ -212,18 +219,18 @@ class Storage:
     # Decisions
     # -------------------------------------------------------------------------
     def log_decision(
-        self,
-        symbol: str,
-        action: str,
-        confidence: float,
-        ma_ratio: float,
-        rsi_14: float,
-        vol_20: float,
-        mode: str,
-        equity_before: Optional[float] = None,
-        price: Optional[float] = None,
-        candle_ts: Optional[str] = None,
-        bot_type: Optional[str] = None,
+            self,
+            symbol: str,
+            action: str,
+            confidence: float,
+            ma_ratio: float,
+            rsi_14: float,
+            vol_20: float,
+            mode: str,
+            equity_before: Optional[float] = None,
+            price: Optional[float] = None,
+            candle_ts: Optional[str] = None,
+            bot_type: Optional[str] = None,
     ) -> None:
         """
         Persist a model decision and its feature context.
@@ -325,6 +332,87 @@ class Storage:
             stmt = stmt.order_by(Decision.timestamp.desc()).limit(limit)
             rows = session.exec(stmt).all()
             return list(rows)
+
+    def get_bot_config_value(
+            self,
+            key: str,
+            default: Optional[str] = None,
+            bot_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Returns the configuration value for (bot_type, key) as a string,
+        or the provided default if not found.
+        """
+        effective_bot_type = bot_type or self.bot_type
+        with self._get_session() as session:
+            stmt = (
+                select(BotConfig)
+                .where(
+                    BotConfig.bot_type == effective_bot_type,
+                    BotConfig.key == key,
+                )
+                .limit(1)
+            )
+            row = session.exec(stmt).first()
+            if row is None:
+                return default
+            return row.value
+
+    def get_bot_config_float(
+            self,
+            key: str,
+            default: float,
+            bot_type: Optional[str] = None,
+    ) -> float:
+        """
+        Returns configuration value cast to float, or default on error / missing.
+        """
+        raw = self.get_bot_config_value(key, None, bot_type=bot_type)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return default
+
+    def get_bot_config_int(
+            self,
+            key: str,
+            default: int,
+            bot_type: Optional[str] = None,
+    ) -> int:
+        """
+        Returns configuration value cast to int, or default on error / missing.
+        """
+        raw = self.get_bot_config_value(key, None, bot_type=bot_type)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    def set_bot_config_value(self, key: str, value: str, bot_type: Optional[str] = None) -> None:
+        """
+        Creates or updates a configuration value for (bot_type, key).
+        """
+        effective_bot_type = bot_type or self.bot_type
+        with self._get_session() as session:
+            stmt = (
+                select(BotConfig)
+                .where(
+                    BotConfig.bot_type == effective_bot_type,
+                    BotConfig.key == key,
+                )
+                .limit(1)
+            )
+            row = session.exec(stmt).first()
+            if row is None:
+                row = BotConfig(bot_type=effective_bot_type, key=key, value=value)
+                session.add(row)
+            else:
+                row.value = value
+            session.commit()
 
     # -------------------------------------------------------------------------
     # Lifecycle

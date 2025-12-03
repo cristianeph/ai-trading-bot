@@ -41,3 +41,5 @@ To make changes on sqlmodel entities:
 `alembic revision --autogenerate -m "adding new fields to decisions"`
 
 `alembic stamp head`
+
+`alembic upgrade head`
