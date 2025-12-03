@@ -69,9 +69,42 @@ class FoundationalTradingBot(BaseTradingBot):
         self.log = BotLogger("foundational_bot")
         self.log.info(f"[DEBUG CONFIG] BINANCE_TESTNET={settings.BINANCE_TESTNET}, TRADING_MODE={settings.TRADING_MODE}")
 
-        # TP/SL parameters (can be moved to settings later)
-        self.tp_pct: float = 0.003   # +0.3%
-        self.sl_pct: float = -0.004  # -0.4%
+        # Load dynamic configuration from BotConfig table (per bot_type="foundational")
+        # Fallbacks are the same values we were previously using as hardcoded defaults.
+        self.min_confidence = self.storage.get_bot_config_float(
+            "min_confidence",
+            default=min_confidence,
+        )
+        self.sleep_seconds = self.storage.get_bot_config_int(
+            "sleep_seconds",
+            default=sleep_seconds,
+        )
+
+        # TP/SL parameters
+        self.tp_pct = self.storage.get_bot_config_float("tp_pct", default=0.003)
+        self.sl_pct = self.storage.get_bot_config_float("sl_pct", default=-0.004)
+
+        # Strategy thresholds
+        self.drastic_move_threshold = self.storage.get_bot_config_float(
+            "drastic_move_threshold",
+            default=DRASTIC_MOVE_THRESHOLD,
+        )
+        self.hold_conf_margin = self.storage.get_bot_config_float(
+            "hold_conf_margin",
+            default=HOLD_CONF_MARGIN,
+        )
+        self.hold_sample_every_min = self.storage.get_bot_config_int(
+            "hold_sample_every_min",
+            default=HOLD_SAMPLE_EVERY_MIN,
+        )
+
+        # Per-symbol minimum trade amounts
+        self.min_trade_amount: dict[str, float] = {
+            "BTC/USDT": self.storage.get_bot_config_float(
+                "min_trade_amount.BTC/USDT",
+                default=MIN_TRADE_AMOUNT.get("BTC/USDT", 0.00001),
+            ),
+        }
 
         # If there is already BTC in the account and BTC/USDT is in SYMBOLS, create an initial position
         if initial_btc_amount > 0 and "BTC/USDT" in settings.SYMBOLS:
@@ -96,7 +129,7 @@ class FoundationalTradingBot(BaseTradingBot):
         """
 
         try:
-            min_amount = MIN_TRADE_AMOUNT.get("BTC/USDT")
+            min_amount = self.min_trade_amount.get("BTC/USDT")
             if min_amount is not None and initial_btc_amount < min_amount:
                 # Too small to trade reliably: treat as dust, do not create a position.
                 self.log.info(
@@ -451,11 +484,11 @@ class FoundationalTradingBot(BaseTradingBot):
         if current_pos is None:
             return False
 
-        if price_change < DRASTIC_MOVE_THRESHOLD:
+        if price_change < self.drastic_move_threshold:
             self.log.info(
                 f"[{symbol}] Skipping model decision: same candle, "
                 f"price_change={price_change:.4%} "
-                f"(<{DRASTIC_MOVE_THRESHOLD:.4%})"
+                f"(<{self.drastic_move_threshold:.4%})"
             )
             self._update_position_price(symbol, price)
             self._log_position_status(symbol)
@@ -533,8 +566,8 @@ class FoundationalTradingBot(BaseTradingBot):
             equity_before=equity_before,
             price=price,
             candle_ts=candle_ts,
-            hold_conf_margin=HOLD_CONF_MARGIN,
-            hold_sample_every_min=HOLD_SAMPLE_EVERY_MIN,
+            hold_conf_margin=self.hold_conf_margin,
+            hold_sample_every_min=self.hold_sample_every_min,
         )
 
         # Update position price if there is an open position
