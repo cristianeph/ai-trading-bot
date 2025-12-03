@@ -311,6 +311,49 @@ class Storage:
             rows = session.exec(stmt).all()
             return list(rows)
 
+    def get_open_position_for_symbol(
+        self,
+        symbol: str,
+        mode: Optional[str] = None,
+    ) -> Optional[OpenPosition]:
+        """
+        Returns the most recent OpenPosition row for the given symbol and this
+        Storage.bot_type, optionally filtered by mode.
+        """
+        with self._get_session() as session:
+            stmt = select(OpenPosition).where(OpenPosition.bot_type == self.bot_type)
+            stmt = stmt.where(OpenPosition.symbol == symbol)
+            if mode is not None:
+                stmt = stmt.where(OpenPosition.mode == mode)
+            stmt = stmt.order_by(OpenPosition.timestamp.desc()).limit(1)
+            row = session.exec(stmt).first()
+            return row
+
+    def update_open_position(
+        self,
+        position_id: int,
+        *,
+        amount: Optional[float] = None,
+        entry_price: Optional[float] = None,
+        entry_fee_usdt: Optional[float] = None,
+    ) -> None:
+        """
+        Updates fields of an existing OpenPosition row by id. Fields left as
+        None will not be modified.
+        """
+        with self._get_session() as session:
+            row = session.get(OpenPosition, position_id)
+            if row is None:
+                return
+            if amount is not None:
+                row.amount = amount
+            if entry_price is not None:
+                row.entry_price = entry_price
+            if entry_fee_usdt is not None:
+                row.entry_fee_usdt = entry_fee_usdt
+            session.add(row)
+            session.commit()
+
     def get_decisions_without_outcome(
             self,
             symbol: Optional[str] = None,
@@ -391,6 +434,25 @@ class Storage:
             return int(raw)
         except (TypeError, ValueError):
             return default
+
+    def get_bot_config_prefix(
+        self,
+        prefix: str,
+        bot_type: Optional[str] = None,
+    ) -> dict[str, str]:
+        """
+        Returns all configuration key/value pairs for this bot_type whose key
+        starts with the provided prefix. For example: 'target_weight.'.
+        """
+        effective_bot_type = bot_type or self.bot_type
+        with self._get_session() as session:
+            stmt = (
+                select(BotConfig)
+                .where(BotConfig.bot_type == effective_bot_type)
+                .where(BotConfig.key.like(f"{prefix}%"))
+            )
+            rows = session.exec(stmt).all()
+            return {row.key: row.value for row in rows}
 
     def set_bot_config_value(self, key: str, value: str, bot_type: Optional[str] = None) -> None:
         """

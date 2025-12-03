@@ -15,7 +15,9 @@ class Settings:
     TIMEFRAME = "5m" # 15m
     TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "6000"))
 
-    MODEL_URL = os.getenv("MODEL_URL", "http://localhost:8000/predict")
+    # default symbol BTC for foundational bot
+    MODEL_URL = os.getenv("MODEL_URL_BTC", "http://localhost:8001/predict")
+
     REBALANCING_SYMBOLS = ["BTC/USDT", "ETH/USDT"]
 
 settings = Settings()

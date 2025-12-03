@@ -1,4 +1,5 @@
 import math
+import os
 from typing import Optional, Any, cast
 
 import pandas as pd
@@ -71,6 +72,29 @@ class RebalancingTradingBot(BaseTradingBot):
 
         # Override logger name to make logs easy to filter
         self.log = BotLogger("RebalancingTradingBot")
+
+        # ------------------------------------------------------------------
+        # Per-symbol model clients (BTC/ETH) based on env vars
+        # ------------------------------------------------------------------
+        self.model_clients: dict[str, ModelClient] = {}
+
+        btc_url = os.getenv("MODEL_URL_BTC")
+        eth_url = os.getenv("MODEL_URL_ETH")
+
+        if btc_url:
+            self.model_clients["BTC/USDT"] = ModelClient(btc_url)
+        else:
+            self.log.error(
+                "[REBALANCING] MODEL_URL_BTC not set; BTC/USDT will use default model_client."
+            )
+
+        if eth_url:
+            self.model_clients["ETH/USDT"] = ModelClient(eth_url)
+        else:
+            self.log.error(
+                "[REBALANCING] MODEL_URL_ETH not set; ETH/USDT will use default model_client."
+            )
+
         self.log.info(
             f"[DEBUG CONFIG] BINANCE_TESTNET={settings.BINANCE_TESTNET}, "
             f"TRADING_MODE={settings.TRADING_MODE}"
@@ -161,6 +185,19 @@ class RebalancingTradingBot(BaseTradingBot):
         )
         self._sync_positions_from_db()
         self.initial_equity = compute_equity(self.capital, self.positions)
+    def _predict_for_symbol(
+        self,
+        symbol: str,
+        features: list[float],
+    ) -> tuple[str, float]:
+        """
+        Use a per-symbol model client if configured; otherwise fall back
+        to the default BaseTradingBot.model_client.
+        """
+        client = self.model_clients.get(symbol)
+        if client is None:
+            return self.model_client.predict(features)
+        return client.predict(features)
 
     def _normalize_target_weights(self) -> None:
         """
@@ -641,8 +678,8 @@ class RebalancingTradingBot(BaseTradingBot):
         self._update_position_price(symbol, price)
         equity_before = compute_equity(self.capital, self.positions)
 
-        # Model decision
-        action, conf = self.model_client.predict(features)
+        # Model decision (per-symbol model if available)
+        action, conf = self._predict_for_symbol(symbol, features)
         self.log.info(
             f"[{symbol}] model action: {action}, conf={conf:.2f}, price={price:.2f}"
         )
