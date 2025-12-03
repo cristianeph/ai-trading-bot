@@ -33,11 +33,19 @@ DEFAULT_REBALANCE_THRESHOLD_PCT: float = 0.02  # 2%
 # Maximum fraction of total equity to move in a single rebalance step.
 DEFAULT_MAX_TRADE_PCT: float = 0.25  # 25% of equity
 
+
 # For candle-skip logic (same as foundational, but with different bot_type)
 DEFAULT_DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05%
 
 DEFAULT_HOLD_CONF_MARGIN: float = 0.10
 DEFAULT_HOLD_SAMPLE_EVERY_MIN: int = 10
+
+# Smart rebalance / volatility / cash buffer defaults
+DEFAULT_SMART_SCALE_MAX_DELTA_PCT: float = 0.10 # 10% extra deviation -> full size
+DEFAULT_SMART_VOL_ENABLED: bool = True
+DEFAULT_SMART_VOL_MEDIUM: float = 0.02 # medium volatility level
+DEFAULT_SMART_VOL_HIGH: float = 0.04 # high volatility level
+DEFAULT_CASH_BUFFER_PCT: float = 0.10 # 10% of equity kept as USDT buffer
 
 
 class RebalancingTradingBot(BaseTradingBot):
@@ -125,6 +133,7 @@ class RebalancingTradingBot(BaseTradingBot):
             default=DEFAULT_MAX_TRADE_PCT,
         )
 
+
         # Candle-skip / decision logging sampling
         self.drastic_move_threshold = self.storage.get_bot_config_float(
             "drastic_move_threshold",
@@ -137,6 +146,41 @@ class RebalancingTradingBot(BaseTradingBot):
         self.hold_sample_every_min = self.storage.get_bot_config_int(
             "hold_sample_every_min",
             default=DEFAULT_HOLD_SAMPLE_EVERY_MIN,
+        )
+
+        # Cash buffer to keep some equity unallocated (for fees / liquidity)
+        raw_cash_buffer = self.storage.get_bot_config_value(
+            "cash_buffer_pct",
+            default=None,
+        )
+        if raw_cash_buffer is None:
+            self.cash_buffer_pct = DEFAULT_CASH_BUFFER_PCT
+        else:
+            try:
+                self.cash_buffer_pct = float(raw_cash_buffer)
+            except (TypeError, ValueError):
+                self.cash_buffer_pct = DEFAULT_CASH_BUFFER_PCT
+
+        # Smart scaling of trade size according to deviation magnitude
+        self.smart_scale_max_delta_pct = self.storage.get_bot_config_float(
+            "smart_scale_max_delta_pct",
+            default=DEFAULT_SMART_SCALE_MAX_DELTA_PCT,
+        )
+
+        # Volatility-aware trade size modulation
+        raw_smart_vol_enabled = self.storage.get_bot_config_value(
+            "smart_vol_enabled",
+            default="true" if DEFAULT_SMART_VOL_ENABLED else "false",
+        )
+        self.smart_vol_enabled = str(raw_smart_vol_enabled).lower() in ("1", "true", "yes", "y")
+
+        self.smart_vol_medium = self.storage.get_bot_config_float(
+            "smart_vol_medium",
+            default=DEFAULT_SMART_VOL_MEDIUM,
+        )
+        self.smart_vol_high = self.storage.get_bot_config_float(
+            "smart_vol_high",
+            default=DEFAULT_SMART_VOL_HIGH,
         )
 
         # Per-symbol target weights and minimum tradable amounts
@@ -181,6 +225,9 @@ class RebalancingTradingBot(BaseTradingBot):
             f"[REBALANCING] Target weights: {self.target_weights}, "
             f"rebalance_threshold_pct={self.rebalance_threshold_pct:.2%}, "
             f"max_trade_pct={self.max_trade_pct:.2%}, "
+            f"cash_buffer_pct={self.cash_buffer_pct:.2%}, "
+            f"smart_scale_max_delta_pct={self.smart_scale_max_delta_pct:.2%}, "
+            f"smart_vol_enabled={self.smart_vol_enabled}, "
             f"min_confidence={self.min_confidence:.2f}"
         )
         self._sync_positions_from_db()
@@ -341,7 +388,35 @@ class RebalancingTradingBot(BaseTradingBot):
     ) -> None:
         """
         Execute a partial BUY to increase allocation towards target.
+        Respects:
+          - min_trade_amount for the symbol
+          - cash_buffer_pct to keep a portion of equity in USDT
         """
+        if trade_value <= 0 or not math.isfinite(trade_value):
+            return
+
+        # ------------------------------------------------------------------
+        # Respect cash buffer: do not spend beyond (capital - buffer_amount)
+        # ------------------------------------------------------------------
+        total_equity = compute_equity(self.capital, self.positions)
+        buffer_amount = max(total_equity * self.cash_buffer_pct, 0.0)
+        max_spend = max(0.0, self.capital - buffer_amount)
+
+        if max_spend <= 0:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: capital {self.capital:.2f} <= "
+                f"buffer {buffer_amount:.2f} (cash_buffer_pct={self.cash_buffer_pct:.2%})."
+            )
+            return
+
+        if trade_value > max_spend:
+            self.log.info(
+                f"[{symbol}] Reducing BUY trade_value from {trade_value:.2f} to "
+                f"{max_spend:.2f} to respect cash buffer "
+                f"(equity={total_equity:.2f}, buffer={buffer_amount:.2f})."
+            )
+            trade_value = max_spend
+
         if trade_value <= 0 or not math.isfinite(trade_value):
             return
 
@@ -354,6 +429,7 @@ class RebalancingTradingBot(BaseTradingBot):
             )
             return
 
+        # Sanity check in case capital shrank between calculations
         if trade_value > self.capital:
             trade_value = max(0.0, self.capital)
             amount = trade_value / price
@@ -581,12 +657,22 @@ class RebalancingTradingBot(BaseTradingBot):
             )
             return
 
+        # Apply cash buffer: only a fraction of equity is considered for targets
+        effective_equity = total_equity * max(0.0, 1.0 - self.cash_buffer_pct)
+        if effective_equity <= 0:
+            self.log.info(
+                f"[{symbol}] Skipping rebalance: non-positive effective_equity "
+                f"after cash buffer (equity={total_equity:.2f}, "
+                f"buffer_pct={self.cash_buffer_pct:.2%})."
+            )
+            return
+
         (
             current_value,
             current_pct,
             target_pct,
             delta_pct,
-        ) = self._compute_current_allocation(symbol, price, total_equity)
+        ) = self._compute_current_allocation(symbol, price, effective_equity)
 
         if abs(delta_pct) < self.rebalance_threshold_pct:
             self.log.info(
@@ -596,10 +682,65 @@ class RebalancingTradingBot(BaseTradingBot):
             )
             return
 
-        desired_value_change = delta_pct * total_equity
+        # Base desired change based on effective equity (after buffer)
+        desired_value_change = delta_pct * effective_equity
+
         # Cap trade value by configured max fraction of equity
-        max_trade_value = self.max_trade_pct * total_equity
-        trade_value = min(abs(desired_value_change), max_trade_value)
+        max_trade_value = self.max_trade_pct * effective_equity
+        base_trade_value = min(abs(desired_value_change), max_trade_value)
+
+        if base_trade_value <= 0:
+            return
+
+        # --------------------------------------------------------------
+        # Smart scaling by deviation magnitude:
+        #   - we only start scaling beyond the threshold
+        #   - up to smart_scale_max_delta_pct we go from 0 -> 100% size
+        # --------------------------------------------------------------
+        excess_delta_pct = abs(delta_pct) - self.rebalance_threshold_pct
+        if excess_delta_pct <= 0:
+            # Should not happen because we already returned when abs(delta_pct) < threshold,
+            # but keep guardrail.
+            return
+
+        if self.smart_scale_max_delta_pct > 0:
+            scale = min(1.0, max(0.0, excess_delta_pct / self.smart_scale_max_delta_pct))
+        else:
+            scale = 1.0
+
+        trade_value = base_trade_value * scale
+        if trade_value <= 0:
+            self.log.info(
+                f"[{symbol}] Smart scaling reduced trade_value to 0. "
+                f"delta_pct={delta_pct:.2%}, excess_delta_pct={excess_delta_pct:.2%}"
+            )
+            return
+
+        # --------------------------------------------------------------
+        # Volatility-aware adjustment:
+        #   - high volatility => smaller trade_value
+        # --------------------------------------------------------------
+        if self.smart_vol_enabled:
+            vol_20 = None
+            try:
+                vol_20 = float(latest_row["vol_20"])
+            except Exception:
+                vol_20 = None
+
+            if vol_20 is not None and math.isfinite(vol_20):
+                vol_factor = 1.0
+                if vol_20 >= self.smart_vol_high:
+                    vol_factor = 0.4
+                elif vol_20 >= self.smart_vol_medium:
+                    vol_factor = 0.7
+
+                adjusted_trade_value = trade_value * vol_factor
+                self.log.info(
+                    f"[{symbol}] Volatility-aware sizing: vol_20={vol_20:.6f}, "
+                    f"factor={vol_factor:.2f}, trade_value={trade_value:.2f} -> "
+                    f"{adjusted_trade_value:.2f}"
+                )
+                trade_value = adjusted_trade_value
 
         if trade_value <= 0:
             return

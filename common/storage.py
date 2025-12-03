@@ -118,6 +118,8 @@ class Storage:
             self.db_url,
             echo=False,
             connect_args=connect_args,
+            pool_pre_ping=True,
+            pool_recycle=1800,
         )
         # Create tables if they do not exist
         SQLModel.metadata.create_all(self.engine)
