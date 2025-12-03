@@ -145,10 +145,8 @@ class RebalancingTradingBot(BaseTradingBot):
             f"max_trade_pct={self.max_trade_pct:.2%}, "
             f"min_confidence={self.min_confidence:.2f}"
         )
-
-    # ------------------------------------------------------------------ #
-    # Config helpers                                                     #
-    # ------------------------------------------------------------------ #
+        self._sync_positions_from_db()
+        self.initial_equity = compute_equity(self.capital, self.positions)
 
     def _normalize_target_weights(self) -> None:
         """
@@ -167,9 +165,68 @@ class RebalancingTradingBot(BaseTradingBot):
             normalized = max(w, 0.0) / total
             self.target_weights[symbol] = normalized
 
-    # ------------------------------------------------------------------ #
-    # Core helpers for rebalancing                                       #
-    # ------------------------------------------------------------------ #
+    def _sync_positions_from_db(self) -> None:
+        """
+        Rebuilds self.positions from OpenPosition table records
+        for this bot_type and mode (TRADING_MODE).
+
+        OpenPosition on the db are only source of truth;
+        here we only generate an aggregated view per symbol
+        """
+        for symbol in settings.SYMBOLS:
+            self.positions[symbol] = None
+
+        rows = self.storage.get_open_positions(mode=settings.TRADING_MODE)
+        aggregated: dict[str, Position] = {}
+
+        for row in rows:
+            symbol = row.symbol
+            if symbol not in settings.SYMBOLS:
+                continue
+
+            amount = float(row.amount)
+            if amount <= 0:
+                continue
+
+            entry_price = float(row.entry_price)
+            entry_fee_usdt = float(row.entry_fee_usdt or 0.0)
+
+            current = aggregated.get(symbol)
+            if current is None:
+                aggregated[symbol] = {
+                    "side": row.side,
+                    "amount": amount,
+                    "entry_price": entry_price,
+                    "entry_fee_usdt": entry_fee_usdt,
+                    "last_price": entry_price,
+                }
+            else:
+                old_amount = float(current["amount"])
+                new_amount = old_amount + amount
+                if new_amount <= 0:
+                    aggregated[symbol] = {
+                        "side": row.side,
+                        "amount": 0.0,
+                        "entry_price": entry_price,
+                        "entry_fee_usdt": entry_fee_usdt,
+                        "last_price": entry_price,
+                    }
+                    continue
+
+                weighted_price = (
+                    current["entry_price"] * old_amount + entry_price * amount
+                ) / new_amount
+
+                current["amount"] = new_amount
+                current["entry_price"] = weighted_price
+                current["entry_fee_usdt"] = current.get("entry_fee_usdt", 0.0) + entry_fee_usdt
+                current["last_price"] = entry_price
+
+        for symbol, pos in aggregated.items():
+            if pos["amount"] > 0:
+                self.positions[symbol] = pos
+            else:
+                self.positions[symbol] = None
 
     def _compute_current_allocation(
         self,
@@ -267,7 +324,6 @@ class RebalancingTradingBot(BaseTradingBot):
             return
 
         if trade_value > self.capital:
-            # Safety: cap by free capital
             trade_value = max(0.0, self.capital)
             amount = trade_value / price
             if amount < min_amount or trade_value <= 0:
@@ -298,36 +354,56 @@ class RebalancingTradingBot(BaseTradingBot):
         total_cost = executed_amount * avg_price + fee_usdt
         self.capital -= total_cost
 
-        # Update in-memory position: we allow multiple partial buys
+        existing_row = self.storage.get_open_position_for_symbol(
+            symbol,
+            mode=settings.TRADING_MODE,
+        )
         current_pos = self.positions.get(symbol)
-        if current_pos is None:
+
+        prev_amount = float(current_pos.get("amount", 0.0)) if current_pos else 0.0
+        prev_price = float(current_pos.get("entry_price", avg_price)) if current_pos else avg_price
+        prev_fee = float(current_pos.get("entry_fee_usdt", 0.0) if current_pos else 0.0)
+
+        new_amount = prev_amount + executed_amount
+        if new_amount <= 0:
+            self.positions[symbol] = None
+            if existing_row is not None:
+                self.storage.remove_open_position(existing_row.id)
+        else:
+            new_entry_price = (
+                prev_amount * prev_price + executed_amount * avg_price
+            ) / new_amount
+            new_fee = prev_fee + fee_usdt
+
             self.positions[symbol] = cast(
                 Position,
                 {
                     "side": "buy",
-                    "amount": executed_amount,
-                    "entry_price": avg_price,
-                    "entry_fee_usdt": 0.0,  # we fold fees into capital only
+                    "amount": new_amount,
+                    "entry_price": new_entry_price,
+                    "entry_fee_usdt": new_fee,
                     "last_price": avg_price,
                 },
             )
-        else:
-            prev_amount = float(current_pos.get("amount", 0.0))
-            prev_price = float(current_pos.get("entry_price", 0.0))
 
-            new_amount = prev_amount + executed_amount
-            if new_amount <= 0:
-                self.positions[symbol] = None
+            if existing_row is None:
+                self.storage.add_open_position(
+                    symbol=symbol,
+                    side="buy",
+                    amount=new_amount,
+                    entry_price=new_entry_price,
+                    entry_fee_usdt=new_fee,
+                    mode=settings.TRADING_MODE,
+                    bot_type="rebalancing",
+                )
             else:
-                # Weighted average entry price (fees already discounted from capital)
-                new_entry_price = (
-                    prev_amount * prev_price + executed_amount * avg_price
-                ) / new_amount
-                current_pos["amount"] = new_amount
-                current_pos["entry_price"] = new_entry_price
-                current_pos["last_price"] = avg_price
+                self.storage.update_open_position(
+                    existing_row.id,
+                    amount=new_amount,
+                    entry_price=new_entry_price,
+                    entry_fee_usdt=new_fee,
+                )
 
-        # Persist trade
         self.storage.log_trade(
             symbol=symbol,
             side="buy",
@@ -366,7 +442,6 @@ class RebalancingTradingBot(BaseTradingBot):
             return
 
         amount = trade_value / price
-        # Cap by available amount
         amount = min(amount, amount_available)
 
         min_amount = self.min_trade_amount.get(symbol, 0.0)
@@ -400,18 +475,34 @@ class RebalancingTradingBot(BaseTradingBot):
 
         prev_amount = float(current_pos.get("amount", 0.0))
         entry_price = float(current_pos.get("entry_price", 0.0))
+        entry_fee_usdt = float(current_pos.get("entry_fee_usdt", 0.0))
 
-        # Simple realized PnL for the sold portion (ignoring historical fees in basis)
         cost_sold = executed_amount * entry_price
         pnl_realized = proceeds - cost_sold
 
         remaining_amount = prev_amount - executed_amount
-        if remaining_amount <= 0:
+
+        existing_row = self.storage.get_open_position_for_symbol(
+            symbol,
+            mode=settings.TRADING_MODE,
+        )
+
+        if remaining_amount <= 0 or remaining_amount < min_amount:
+            if existing_row is not None:
+                self.storage.remove_open_position(existing_row.id)
             self.positions[symbol] = None
         else:
             current_pos["amount"] = remaining_amount
             current_pos["last_price"] = exit_price
-            # Keep same entry_price for remaining amount (average cost approximation)
+            self.positions[symbol] = current_pos
+
+            if existing_row is not None:
+                self.storage.update_open_position(
+                    existing_row.id,
+                    amount=remaining_amount,
+                    entry_price=entry_price,
+                    entry_fee_usdt=entry_fee_usdt,
+                )
 
         self.storage.log_trade(
             symbol=symbol,
@@ -540,6 +631,7 @@ class RebalancingTradingBot(BaseTradingBot):
         features: list[float],
         candle_ts: Any,
     ) -> None:
+        self._sync_positions_from_db()
         # Skip noisy repeated decisions on same candle with tiny price movement
         if self._should_skip_decision_same_candle(symbol, candle_ts, price):
             return
