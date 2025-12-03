@@ -66,7 +66,7 @@ class FoundationalTradingBot(BaseTradingBot):
             bot_type="foundational",
         )
 
-        self.log = BotLogger("foundational_bot")
+        self.log = BotLogger("FoundationalTradingBot")
         self.log.info(f"[DEBUG CONFIG] BINANCE_TESTNET={settings.BINANCE_TESTNET}, TRADING_MODE={settings.TRADING_MODE}")
 
         # Load dynamic configuration from BotConfig table (per bot_type="foundational")
