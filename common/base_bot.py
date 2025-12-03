@@ -69,9 +69,14 @@ class BaseTradingBot(ABC):
         self.storage = storage or Storage(bot_type=bot_type)
         self.model_client = model_client or ModelClient(settings.MODEL_URL)
 
+        if bot_type == "rebalancing":
+            self.symbols = settings.REBALANCING_SYMBOLS
+        else:
+            self.symbols = settings.SYMBOLS
+
         self.capital: float = balance
         self.positions: Dict[str, Optional[Position]] = {
-            symbol: None for symbol in settings.SYMBOLS
+            symbol: None for symbol in self.symbols
         }
 
         # equity inicial
@@ -80,7 +85,7 @@ class BaseTradingBot(ABC):
         # track del último candle y precio de decisión por símbolo
         self.last_decision_state: Dict[str, DecisionState] = {
             symbol: {"candle_ts": None, "price": None}
-            for symbol in settings.SYMBOLS
+            for symbol in self.symbols
         }
         self.sleep_seconds = sleep_seconds
         self.min_confidence = min_confidence
@@ -316,7 +321,7 @@ class BaseTradingBot(ABC):
         self.log.info("[BOT] Starting trading loop...")
         try:
             while True:
-                for symbol in settings.SYMBOLS:
+                for symbol in self.symbols:
                     try:
                         self._process_symbol(symbol)
                     except Exception as symbol_exc:  # noqa: BLE001
