@@ -119,14 +119,14 @@ class RebalancingTradingBot(BaseTradingBot):
         self.target_weights: dict[str, float] = {}
         self.min_trade_amount: dict[str, float] = {}
 
-        num_symbols = len(settings.SYMBOLS)
+        num_symbols = len(settings.REBALANCING_SYMBOLS)
         default_equal_weight = 1.0 / num_symbols if num_symbols > 0 else 0.0
 
         # Bulk-load configs by prefix to reduce per-symbol DB calls
         weight_configs = self.storage.get_bot_config_prefix("target_weight.")
         min_amount_configs = self.storage.get_bot_config_prefix("min_trade_amount.")
 
-        for symbol in settings.SYMBOLS:
+        for symbol in settings.REBALANCING_SYMBOLS:
             # Example key in BotConfig: "target_weight.BTC/USDT"
             weight_key = f"target_weight.{symbol}"
             raw_weight = weight_configs.get(weight_key)
@@ -210,7 +210,7 @@ class RebalancingTradingBot(BaseTradingBot):
         OpenPosition on the db are only source of truth;
         here we only generate an aggregated view per symbol
         """
-        for symbol in settings.SYMBOLS:
+        for symbol in settings.REBALANCING_SYMBOLS:
             self.positions[symbol] = None
 
         rows = self.storage.get_open_positions(mode=settings.TRADING_MODE)
@@ -218,7 +218,7 @@ class RebalancingTradingBot(BaseTradingBot):
 
         for row in rows:
             symbol = row.symbol
-            if symbol not in settings.SYMBOLS:
+            if symbol not in settings.REBALANCING_SYMBOLS:
                 continue
 
             amount = float(row.amount)
@@ -672,7 +672,7 @@ class RebalancingTradingBot(BaseTradingBot):
         # Final status + equity snapshot
         self._log_position_status(symbol)
         # Log equity once per full loop (for the last symbol) to reduce DB writes
-        if symbol == settings.SYMBOLS[-1]:
+        if symbol == settings.REBALANCING_SYMBOLS[-1]:
             self._log_equity()
 
 
