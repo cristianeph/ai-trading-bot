@@ -14,29 +14,20 @@ from common.features import build_features_for_symbol
 from common.data_client import get_historical_ohlcv
 from common.config import settings
 
-MODEL_PATH = Path("model") / "latest_model.pkl"
+
+def get_model_dir_for_symbol(symbol: str) -> Path:
+    base = symbol.split("/")[0].lower()
+    return Path(f"model_{base}")
 
 
-def load_data_for_symbols(symbols: list[str], limit: int) -> pd.DataFrame:
-    dfs = []
-    for symbol in symbols:
-        ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=limit)
-        df = build_features_for_symbol(ohlcv, symbol, settings.TIMEFRAME)
-        print("Data loaded by a single df: ", len(df))
-        dfs.append(df)
-    print("DFs loaded: ", len(dfs))
-    return pd.concat(dfs)
+def load_data_for_symbol(symbol: str, limit: int) -> pd.DataFrame:
+    ohlcv = get_historical_ohlcv(symbol, settings.TIMEFRAME, limit=limit)
+    df = build_features_for_symbol(ohlcv, symbol, settings.TIMEFRAME)
+    print(f"[trainer] Data loaded for {symbol}: {len(df)} rows")
+    return df
 
 
-def train_and_save_model():
-    # 1) Cargar datos históricos
-    df = load_data_for_symbols(
-        settings.SYMBOLS,
-        limit=settings.TRAIN_HISTORY_LIMIT
-    )
-
-    feature_cols = ["ma_ratio", "rsi_14", "vol_20"]
-
+def build_and_train_model(df: pd.DataFrame, feature_cols: list[str]) -> Pipeline:
     # 2) Limpiar NaN e infinitos
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.dropna(subset=feature_cols + ["y"])
@@ -98,9 +89,24 @@ def train_and_save_model():
     score = model.score(X_test, y_test)
     print(f"[trainer] Accuracy test: {score:.3f}")
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, MODEL_PATH)
-    print(f"[trainer] Modelo guardado en: {MODEL_PATH.absolute()}")
+    return model
+
+
+def train_and_save_model_for_symbol(symbol: str, limit: int) -> None:
+    feature_cols = ["ma_ratio", "rsi_14", "vol_20"]
+    df = load_data_for_symbol(symbol, limit=limit)
+    model = build_and_train_model(df, feature_cols)
+    model_dir = get_model_dir_for_symbol(symbol)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "latest_model.pkl"
+    joblib.dump(model, model_path)
+    print(f"[trainer] Model for {symbol} saved at: {model_path.absolute()}")
+
+
+def train_and_save_model():
+    print(f"[trainer] Training models for symbols: {settings.SYMBOLS}")
+    for symbol in settings.REBALANCING_SYMBOLS:
+        train_and_save_model_for_symbol(symbol, limit=settings.TRAIN_HISTORY_LIMIT)
 
 
 if __name__ == "__main__":

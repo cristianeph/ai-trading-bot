@@ -1,20 +1,49 @@
 services:
-  model:
+#  model:
+#    build:
+#      context: .
+#      dockerfile: model/model.Dockerfile
+#    container_name: crypto-model
+#    restart: unless-stopped
+#    ports:
+#      - "8000:8000"
+  model_btc:
     build:
       context: .
-      dockerfile: model/model.Dockerfile
-    container_name: crypto-model
+      dockerfile: model-btc/model.Dockerfile
+    container_name: crypto-model-btc
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8001"
 
-  bot:
+  model_eth:
+    build:
+      context: .
+      dockerfile: model-eth/model.Dockerfile
+    container_name: crypto-model-eth
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+
+  bot_foundational:
     build:
       context: .
       dockerfile: bot-foundational/bot-foundational.Dockerfile
     container_name: crypto-bot-foundational
     restart: unless-stopped
     depends_on:
-      - model
+      - model_btc
     env_file:
       - .env.foundational
+
+  bot_rebalancing:
+    build:
+      context: .
+      dockerfile: bot-rebalancing/bot-rebalancing.Dockerfile
+    container_name: crypto-bot-rebalancing
+    restart: unless-stopped
+    depends_on:
+      - model_btc
+      - model_eth
+    env_file:
+      - .env.rebalancing
