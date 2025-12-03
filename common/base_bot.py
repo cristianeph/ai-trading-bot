@@ -85,6 +85,10 @@ class BaseTradingBot(ABC):
         self.sleep_seconds = sleep_seconds
         self.min_confidence = min_confidence
 
+        # Default threshold used by _should_skip_decision_same_candle.
+        # Concrete bots can override this with a config-driven value.
+        self.drastic_move_threshold: float = 0.0
+
         self.log.info(
             f"[BOT:{bot_type}] Inicializado. Capital inicial: {self.capital}, "
             f"Equity inicial≈{self.initial_equity:.2f} USDT"
@@ -219,6 +223,54 @@ class BaseTradingBot(ABC):
             price=price,
             candle_ts=candle_ts_str,
         )
+
+    def _should_skip_decision_same_candle(
+        self,
+        symbol: str,
+        candle_ts: Any,
+        price: float,
+    ) -> bool:
+        """
+        Generic helper used by concrete strategies to optionally skip
+        re-processing a symbol when we are still on the same candle and
+        the price move has not been "drastic" enough.
+
+        - Uses self.last_decision_state to detect same-candle decisions.
+        - Uses self.drastic_move_threshold as a relative price-change threshold.
+        - If it decides to skip, it updates last price, logs position status
+          and equity, and returns True.
+        """
+        state = self.last_decision_state.get(symbol) or {}
+        last_candle_ts = state.get("candle_ts")
+        last_price = state.get("price")
+
+        # If we do not have a previous decision for this symbol,
+        # or we are on a different candle, do not skip.
+        if last_candle_ts is None or last_candle_ts != candle_ts:
+            return False
+        if last_price is None or last_price <= 0:
+            return False
+
+        # Compute relative price move since the last decision for this candle.
+        price_change_pct = abs(price - float(last_price)) / float(last_price)
+
+        threshold = getattr(self, "drastic_move_threshold", 0.0)
+        if price_change_pct < threshold:
+            # Small move within the same candle: skip re-processing, but
+            # keep internal state (price, position, equity) up to date.
+            self.last_decision_state[symbol]["price"] = price
+            self._update_position_price(symbol, price)
+
+            self._log_position_status(symbol)
+            self._log_equity()
+
+            self.log.info(
+                f"[{symbol}] Same candle, price move {price_change_pct:.6f} "
+                f"< threshold {threshold:.6f}. Skipping decision."
+            )
+            return True
+
+        return False
 
     def _process_symbol(self, symbol: str) -> None:
         """

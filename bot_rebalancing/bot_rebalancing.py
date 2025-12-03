@@ -122,21 +122,35 @@ class RebalancingTradingBot(BaseTradingBot):
         num_symbols = len(settings.SYMBOLS)
         default_equal_weight = 1.0 / num_symbols if num_symbols > 0 else 0.0
 
+        # Bulk-load configs by prefix to reduce per-symbol DB calls
+        weight_configs = self.storage.get_bot_config_prefix("target_weight.")
+        min_amount_configs = self.storage.get_bot_config_prefix("min_trade_amount.")
+
         for symbol in settings.SYMBOLS:
             # Example key in BotConfig: "target_weight.BTC/USDT"
             weight_key = f"target_weight.{symbol}"
-            self.target_weights[symbol] = self.storage.get_bot_config_float(
-                weight_key,
-                default=default_equal_weight,
-            )
+            raw_weight = weight_configs.get(weight_key)
+            if raw_weight is not None:
+                try:
+                    self.target_weights[symbol] = float(raw_weight)
+                except (TypeError, ValueError):
+                    self.target_weights[symbol] = default_equal_weight
+            else:
+                self.target_weights[symbol] = default_equal_weight
 
             # Example key in BotConfig: "min_trade_amount.BTC/USDT"
             min_amount_key = f"min_trade_amount.{symbol}"
-            self.min_trade_amount[symbol] = self.storage.get_bot_config_float(
-                min_amount_key,
-                default=0.00001,
-            )
+            raw_min_amount = min_amount_configs.get(min_amount_key)
+            if raw_min_amount is not None:
+                try:
+                    self.min_trade_amount[symbol] = float(raw_min_amount)
+                except (TypeError, ValueError):
+                    self.min_trade_amount[symbol] = 0.00001
+            else:
+                self.min_trade_amount[symbol] = 0.00001
 
+        # Log raw weights before normalization for easier debugging
+        self.log.info(f"[REBALANCING] Raw target weights from BotConfig: {self.target_weights}")
         self._normalize_target_weights()
 
         self.log.info(
@@ -164,6 +178,29 @@ class RebalancingTradingBot(BaseTradingBot):
         for symbol, w in list(self.target_weights.items()):
             normalized = max(w, 0.0) / total
             self.target_weights[symbol] = normalized
+
+        # Sanity-check the normalized sum (should be ~1.0, modulo float error)
+        normalized_sum = sum(self.target_weights.values())
+        if abs(normalized_sum - 1.0) > 1e-6:
+            self.log.error(
+                f"[REBALANCING] Normalized target weights do not sum to 1.0 "
+                f"(sum={normalized_sum:.6f}). Please review configuration."
+            )
+        else:
+            self.log.info(
+                f"[REBALANCING] Normalized target weights sum to {normalized_sum:.6f}."
+            )
+
+
+    def _before_symbols_loop(self) -> None:
+        """
+        Called once per main loop iteration (see BaseTradingBot.run).
+
+        For the rebalancing bot, we use this hook to rebuild positions from
+        the OpenPosition table once per loop instead of once per symbol,
+        reducing DB load.
+        """
+        self._sync_positions_from_db()
 
     def _sync_positions_from_db(self) -> None:
         """
@@ -254,49 +291,6 @@ class RebalancingTradingBot(BaseTradingBot):
         delta_pct = target_pct - current_pct
         return current_value, current_pct, target_pct, delta_pct
 
-    def _should_skip_decision_same_candle(
-        self,
-        symbol: str,
-        candle_ts: Any,
-        price: float,
-    ) -> bool:
-        """
-        Same-candle skip logic:
-        - If we are still on the same candle.
-        - And price has moved less than self.drastic_move_threshold.
-        - And there is already an open position.
-
-        Then we skip model + rebalance logic to reduce noise.
-        """
-        last_state = self.last_decision_state.get(
-            symbol, {"candle_ts": None, "price": None}
-        )
-        last_candle_ts = last_state.get("candle_ts")
-        last_decision_price = last_state.get("price")
-
-        if last_candle_ts != candle_ts:
-            return False
-
-        if last_decision_price is None or last_decision_price <= 0:
-            return False
-
-        price_change = abs(price - last_decision_price) / last_decision_price
-        current_pos = self.positions.get(symbol)
-        if current_pos is None:
-            return False
-
-        if price_change < self.drastic_move_threshold:
-            self.log.info(
-                f"[{symbol}] Skipping model decision: same candle, "
-                f"price_change={price_change:.4%} "
-                f"(<{self.drastic_move_threshold:.4%})"
-            )
-            self._update_position_price(symbol, price)
-            self._log_position_status(symbol)
-            self._log_equity()
-            return True
-
-        return False
 
     # ------------------------------------------------------------------ #
     # Trade execution helpers (partial BUY/SELL)                         #
@@ -477,10 +471,13 @@ class RebalancingTradingBot(BaseTradingBot):
         entry_price = float(current_pos.get("entry_price", 0.0))
         entry_fee_usdt = float(current_pos.get("entry_fee_usdt", 0.0))
 
-        cost_sold = executed_amount * entry_price
+        # Allocate a proportional share of the original entry fee to the portion sold
+        fee_allocated = entry_fee_usdt * (executed_amount / prev_amount) if prev_amount > 0 else 0.0
+        cost_sold = executed_amount * entry_price + fee_allocated
         pnl_realized = proceeds - cost_sold
 
         remaining_amount = prev_amount - executed_amount
+        remaining_fee = entry_fee_usdt - fee_allocated
 
         existing_row = self.storage.get_open_position_for_symbol(
             symbol,
@@ -494,6 +491,7 @@ class RebalancingTradingBot(BaseTradingBot):
         else:
             current_pos["amount"] = remaining_amount
             current_pos["last_price"] = exit_price
+            current_pos["entry_fee_usdt"] = remaining_fee
             self.positions[symbol] = current_pos
 
             if existing_row is not None:
@@ -501,7 +499,7 @@ class RebalancingTradingBot(BaseTradingBot):
                     existing_row.id,
                     amount=remaining_amount,
                     entry_price=entry_price,
-                    entry_fee_usdt=entry_fee_usdt,
+                    entry_fee_usdt=remaining_fee,
                 )
 
         self.storage.log_trade(
@@ -631,7 +629,6 @@ class RebalancingTradingBot(BaseTradingBot):
         features: list[float],
         candle_ts: Any,
     ) -> None:
-        self._sync_positions_from_db()
         # Skip noisy repeated decisions on same candle with tiny price movement
         if self._should_skip_decision_same_candle(symbol, candle_ts, price):
             return
@@ -640,6 +637,8 @@ class RebalancingTradingBot(BaseTradingBot):
         self.last_decision_state[symbol]["candle_ts"] = candle_ts
         self.last_decision_state[symbol]["price"] = price
 
+        # Update last seen price in the current position (if any) before computing equity
+        self._update_position_price(symbol, price)
         equity_before = compute_equity(self.capital, self.positions)
 
         # Model decision
@@ -661,9 +660,6 @@ class RebalancingTradingBot(BaseTradingBot):
             hold_sample_every_min=self.hold_sample_every_min,
         )
 
-        # Update last seen price in the current position (if any)
-        self._update_position_price(symbol, price)
-
         # Apply portfolio rebalancing logic
         self._apply_rebalancing_logic(
             symbol=symbol,
@@ -675,7 +671,9 @@ class RebalancingTradingBot(BaseTradingBot):
 
         # Final status + equity snapshot
         self._log_position_status(symbol)
-        self._log_equity()
+        # Log equity once per full loop (for the last symbol) to reduce DB writes
+        if symbol == settings.SYMBOLS[-1]:
+            self._log_equity()
 
 
 # ---------------------------------------------------------------------- #
