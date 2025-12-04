@@ -1,12 +1,4 @@
 services:
-#  model:
-#    build:
-#      context: .
-#      dockerfile: model/model.Dockerfile
-#    container_name: crypto-model
-#    restart: unless-stopped
-#    ports:
-#      - "8000:8000"
   model_btc:
     build:
       context: .
