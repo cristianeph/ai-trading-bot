@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 from sqlalchemy import desc
 from sqlmodel import Field, SQLModel, create_engine, Session, select
@@ -331,6 +331,58 @@ class Storage:
             row = session.exec(stmt).first()
             return row
 
+    def upsert_open_position(
+        self,
+        symbol: str,
+        *,
+        side: str,
+        amount: float,
+        entry_price: float,
+        entry_fee_usdt: float = 0.0,
+        mode: str = "paper",
+        bot_type: Optional[str] = None,
+    ) -> None:
+        """
+        Creates or updates a single OpenPosition row per (bot_type, symbol, mode).
+        """
+        effective_bot_type = bot_type or self.bot_type
+        ts = datetime.utcnow().isoformat()
+
+        with self._get_session() as session:
+            stmt = (
+                select(OpenPosition)
+                .where(
+                    OpenPosition.bot_type == effective_bot_type,
+                    OpenPosition.symbol == symbol,
+                    OpenPosition.mode == mode,
+                )
+                .order_by(desc(OpenPosition.timestamp))
+                .limit(1)
+            )
+            row = session.exec(stmt).first()
+
+            if row is None:
+                row = OpenPosition(
+                    timestamp=ts,
+                    symbol=symbol,
+                    side=side,
+                    amount=amount,
+                    entry_price=entry_price,
+                    entry_fee_usdt=entry_fee_usdt,
+                    mode=mode,
+                    bot_type=effective_bot_type,
+                )
+                session.add(row)
+            else:
+                row.timestamp = ts
+                row.side = side
+                row.amount = amount
+                row.entry_price = entry_price
+                row.entry_fee_usdt = entry_fee_usdt
+                session.add(row)
+
+            session.commit()
+
     def update_open_position(
         self,
         position_id: int,
@@ -485,3 +537,111 @@ class Storage:
         # SQLModel/SQLAlchemy manages the engine lifecycle internally.
         # Method kept for backward compatibility with existing code.
         pass
+
+
+class PositionRepository:
+    """
+    Repository / gateway for working with OpenPosition rows from bots.
+
+    - Se encarga de:
+        * Cargar posiciones agregadas por símbolo (weighted price, fees, etc.)
+        * Upsert / delete por símbolo sin que el bot tenga que manejar IDs
+    """
+
+    def __init__(self, storage: Storage, symbols: List[str], mode: str):
+        self.storage = storage
+        self.symbols = symbols
+        self.mode = mode
+
+    def load_aggregated_positions(self) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Rebuilds a dict[symbol] -> aggregated Position-like dict or None.
+
+        Es básicamente la lógica que estaba en _sync_positions_from_db
+        del bot_rebalancing.
+        """
+        positions: Dict[str, Optional[Dict[str, Any]]] = {s: None for s in self.symbols}
+        aggregated: Dict[str, Dict[str, Any]] = {}
+
+        rows = self.storage.get_open_positions(mode=self.mode)
+
+        for row in rows:
+            symbol = row.symbol
+            if symbol not in self.symbols:
+                continue
+
+            amount = float(row.amount)
+            if amount <= 0:
+                continue
+
+            entry_price = float(row.entry_price)
+            entry_fee_usdt = float(row.entry_fee_usdt or 0.0)
+
+            current = aggregated.get(symbol)
+            if current is None:
+                aggregated[symbol] = {
+                    "side": row.side,
+                    "amount": amount,
+                    "entry_price": entry_price,
+                    "entry_fee_usdt": entry_fee_usdt,
+                    "last_price": entry_price,
+                }
+            else:
+                old_amount = float(current["amount"])
+                new_amount = old_amount + amount
+                if new_amount <= 0:
+                    aggregated[symbol] = {
+                        "side": row.side,
+                        "amount": 0.0,
+                        "entry_price": entry_price,
+                        "entry_fee_usdt": entry_fee_usdt,
+                        "last_price": entry_price,
+                    }
+                    continue
+
+                weighted_price = (
+                    current["entry_price"] * old_amount + entry_price * amount
+                ) / new_amount
+
+                current["amount"] = new_amount
+                current["entry_price"] = weighted_price
+                current["entry_fee_usdt"] = current.get("entry_fee_usdt", 0.0) + entry_fee_usdt
+                current["last_price"] = entry_price
+
+        for symbol in self.symbols:
+            pos = aggregated.get(symbol)
+            if pos is not None and pos["amount"] > 0:
+                positions[symbol] = pos
+            else:
+                positions[symbol] = None
+
+        return positions
+
+    def upsert_symbol(
+        self,
+        symbol: str,
+        *,
+        side: str,
+        amount: float,
+        entry_price: float,
+        entry_fee_usdt: float,
+    ) -> None:
+        """
+        Upserta una posición agregada para un símbolo en OpenPosition.
+        """
+        self.storage.upsert_open_position(
+            symbol,
+            side=side,
+            amount=amount,
+            entry_price=entry_price,
+            entry_fee_usdt=entry_fee_usdt,
+            mode=self.mode,
+        )
+
+    def remove_symbol(self, symbol: str) -> None:
+        """
+        Elimina la posición del símbolo si existe.
+        """
+        row = self.storage.get_open_position_for_symbol(symbol, mode=self.mode)
+        if row is not None:
+            self.storage.remove_open_position(row.id)
