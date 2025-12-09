@@ -58,21 +58,19 @@ class BaseTradingBot(ABC):
     def __init__(
         self,
         *,
-        sleep_seconds: int = 30,
-        min_confidence: float = 0.52,
         balance: float = 0.0,
         storage: Optional[Storage] = None,
         model_client: Optional[ModelClient] = None,
         bot_type: str = "base",
     ) -> None:
+        self.bot_type = bot_type
         self.log = BotLogger(self.__class__.__name__)
         self.storage = storage or Storage(bot_type=bot_type)
         self.model_client = model_client or ModelClient(settings.MODEL_URL)
 
-        if bot_type == "rebalancing":
-            self.symbols = settings.REBALANCING_SYMBOLS
-        else:
-            self.symbols = settings.SYMBOLS
+        self.config = self.load_config()
+
+        self.symbols = self.config.symbols
 
         self.capital: float = balance
         self.positions: Dict[str, Optional[Position]] = {
@@ -87,17 +85,18 @@ class BaseTradingBot(ABC):
             symbol: {"candle_ts": None, "price": None}
             for symbol in self.symbols
         }
-        self.sleep_seconds = sleep_seconds
-        self.min_confidence = min_confidence
-
-        # Default threshold used by _should_skip_decision_same_candle.
-        # Concrete bots can override this with a config-driven value.
-        self.drastic_move_threshold: float = 0.0
 
         self.log.info(
             f"[BOT:{bot_type}] Inicializado. Capital inicial: {self.capital}, "
             f"Equity inicial≈{self.initial_equity:.2f} USDT"
         )
+
+    @abstractmethod
+    def load_config(self) -> Any:
+        """
+        Cada estrategia debe implementar la carga de su configuración desde Storage.
+        """
+        raise NotImplementedError
 
     def _fetch_latest_market_state(
         self, symbol: str
@@ -241,7 +240,7 @@ class BaseTradingBot(ABC):
         the price move has not been "drastic" enough.
 
         - Uses self.last_decision_state to detect same-candle decisions.
-        - Uses self.drastic_move_threshold as a relative price-change threshold.
+        - Uses self.config.drastic_move_threshold as a relative price-change threshold.
         - If it decides to skip, it updates last price, logs position status
           and equity, and returns True.
         """
@@ -259,7 +258,7 @@ class BaseTradingBot(ABC):
         # Compute relative price move since the last decision for this candle.
         price_change_pct = abs(price - float(last_price)) / float(last_price)
 
-        threshold = getattr(self, "drastic_move_threshold", 0.0)
+        threshold = self.config.drastic_move_threshold
         if price_change_pct < threshold:
             # Small move within the same candle: skip re-processing, but
             # keep internal state (price, position, equity) up to date.
@@ -327,7 +326,7 @@ class BaseTradingBot(ABC):
                     except Exception as symbol_exc:  # noqa: BLE001
                         self.log.error(f"[{symbol}] Error in symbol loop: {symbol_exc}")
 
-                time.sleep(self.sleep_seconds)
+                time.sleep(self.config.sleep_seconds)
 
         except KeyboardInterrupt:
             self.log.error("[BOT] Keyboard interrupt. Shutting down bot...")

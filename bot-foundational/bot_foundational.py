@@ -1,42 +1,94 @@
+from dataclasses import dataclass
+from typing import Dict, Optional, Any, cast
+
 import math
 import pandas as pd
 
-from dotenv import load_dotenv
-load_dotenv(".env.foundational")
-
-from typing import Optional, Any, cast, NamedTuple
-
-from common.logger import BotLogger
 from common.config import settings
+from common.logger import BotLogger
 from common.data_client import place_order, get_binance_client
-from common.base_bot import (
-    BaseTradingBot,
-    Position,
-    compute_equity,
-)
+from common.base_bot import BaseTradingBot, Position, compute_equity
 from common.model_client import ModelClient
 from common.storage import Storage
-from common.monitoring import init_sentry
 
-init_sentry()
+# Assuming these constants are defined somewhere; using values from comments or defaults
+DRASTIC_MOVE_THRESHOLD = 0.0005  # Example value
+HOLD_CONF_MARGIN = 0.10
+HOLD_SAMPLE_EVERY_MIN = 10
+MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
 
-# Strategy-specific thresholds
-DRASTIC_MOVE_THRESHOLD: float = 0.0005  # 0.05%
-HOLD_CONF_MARGIN: float = 0.10
-HOLD_SAMPLE_EVERY_MIN: int = 10
-
-# Minimum tradable amount per symbol (to avoid exchange min-amount errors)
-MIN_TRADE_AMOUNT: dict[str, float] = {
-    "BTC/USDT": 0.00001,
-}
-
-
-class PnL(NamedTuple):
-    """Container for unrealized PnL details."""
+@dataclass
+class PnL:
     invested_usdt: float
     current_value_usdt: float
     unrealized_pnl_usdt: float
     unrealized_pnl_pct: float
+
+
+@dataclass
+class FoundationalConfig:
+    min_confidence: float
+    sleep_seconds: int
+    tp_pct: float
+    sl_pct: float
+    drastic_move_threshold: float
+    hold_conf_margin: float
+    hold_sample_every_min: int
+    min_trade_amount: Dict[str, float]
+    symbols: list[str]
+    bot_type: str
+
+    @classmethod
+    def from_storage(
+        cls,
+        storage: Storage,
+        default_min_confidence: float,
+        default_sleep_seconds: int,
+    ) -> "FoundationalConfig":
+        min_confidence = storage.get_bot_config_float(
+            "min_confidence",
+            default=default_min_confidence,
+        )
+        sleep_seconds = storage.get_bot_config_int(
+            "sleep_seconds",
+            default=default_sleep_seconds,
+        )
+
+        tp_pct = storage.get_bot_config_float("tp_pct", default=0.003)
+        sl_pct = storage.get_bot_config_float("sl_pct", default=-0.004)
+
+        drastic_move_threshold = storage.get_bot_config_float(
+            "drastic_move_threshold",
+            default=DRASTIC_MOVE_THRESHOLD,
+        )
+        hold_conf_margin = storage.get_bot_config_float(
+            "hold_conf_margin",
+            default=HOLD_CONF_MARGIN,
+        )
+        hold_sample_every_min = storage.get_bot_config_int(
+            "hold_sample_every_min",
+            default=HOLD_SAMPLE_EVERY_MIN,
+        )
+
+        min_trade_amount = {
+            "BTC/USDT": storage.get_bot_config_float(
+                "min_trade_amount.BTC/USDT",
+                default=MIN_TRADE_AMOUNT.get("BTC/USDT", 0.00001),
+            ),
+        }
+
+        return cls(
+            min_confidence=min_confidence,
+            sleep_seconds=sleep_seconds,
+            tp_pct=tp_pct,
+            sl_pct=sl_pct,
+            drastic_move_threshold=drastic_move_threshold,
+            hold_conf_margin=hold_conf_margin,
+            hold_sample_every_min=hold_sample_every_min,
+            min_trade_amount=min_trade_amount,
+            symbols=settings.SYMBOLS,
+            bot_type="foundational",
+        )
 
 
 class FoundationalTradingBot(BaseTradingBot):
@@ -57,9 +109,10 @@ class FoundationalTradingBot(BaseTradingBot):
         storage: Optional[Storage] = None,
         model_client: Optional[ModelClient] = None,
     ) -> None:
+        self._default_sleep_seconds = sleep_seconds
+        self._default_min_confidence = min_confidence
+
         super().__init__(
-            sleep_seconds=sleep_seconds,
-            min_confidence=min_confidence,
             balance=balance,
             storage=storage,
             model_client=model_client,
@@ -69,49 +122,19 @@ class FoundationalTradingBot(BaseTradingBot):
         self.log = BotLogger("FoundationalTradingBot")
         self.log.info(f"[DEBUG CONFIG] BINANCE_TESTNET={settings.BINANCE_TESTNET}, TRADING_MODE={settings.TRADING_MODE}")
 
-        # Load dynamic configuration from BotConfig table (per bot_type="foundational")
-        # Fallbacks are the same values we were previously using as hardcoded defaults.
-        self.min_confidence = self.storage.get_bot_config_float(
-            "min_confidence",
-            default=min_confidence,
-        )
-        self.sleep_seconds = self.storage.get_bot_config_int(
-            "sleep_seconds",
-            default=sleep_seconds,
-        )
-
-        # TP/SL parameters
-        self.tp_pct = self.storage.get_bot_config_float("tp_pct", default=0.003)
-        self.sl_pct = self.storage.get_bot_config_float("sl_pct", default=-0.004)
-
-        # Strategy thresholds
-        self.drastic_move_threshold = self.storage.get_bot_config_float(
-            "drastic_move_threshold",
-            default=DRASTIC_MOVE_THRESHOLD,
-        )
-        self.hold_conf_margin = self.storage.get_bot_config_float(
-            "hold_conf_margin",
-            default=HOLD_CONF_MARGIN,
-        )
-        self.hold_sample_every_min = self.storage.get_bot_config_int(
-            "hold_sample_every_min",
-            default=HOLD_SAMPLE_EVERY_MIN,
-        )
-
-        # Per-symbol minimum trade amounts
-        self.min_trade_amount: dict[str, float] = {
-            "BTC/USDT": self.storage.get_bot_config_float(
-                "min_trade_amount.BTC/USDT",
-                default=MIN_TRADE_AMOUNT.get("BTC/USDT", 0.00001),
-            ),
-        }
-
         # If there is already BTC in the account and BTC/USDT is in SYMBOLS, create an initial position
-        if initial_btc_amount > 0 and "BTC/USDT" in settings.SYMBOLS:
+        if initial_btc_amount > 0 and "BTC/USDT" in self.config.symbols:
             self._init_existing_btc(initial_btc_amount)
 
         # Recalculate initial equity including potential BTC position
         self.initial_equity = compute_equity(self.capital, self.positions)
+
+    def load_config(self) -> FoundationalConfig:
+        return FoundationalConfig.from_storage(
+            self.storage,
+            default_min_confidence=self._default_min_confidence,
+            default_sleep_seconds=self._default_sleep_seconds,
+        )
 
     # ------------------------------------------------------------------ #
     # Strategy-specific helpers                                          #
@@ -129,7 +152,7 @@ class FoundationalTradingBot(BaseTradingBot):
         """
 
         try:
-            min_amount = self.min_trade_amount.get("BTC/USDT")
+            min_amount = self.config.min_trade_amount.get("BTC/USDT")
             if min_amount is not None and initial_btc_amount < min_amount:
                 # Too small to trade reliably: treat as dust, do not create a position.
                 self.log.info(
@@ -222,7 +245,7 @@ class FoundationalTradingBot(BaseTradingBot):
             current_price=price,
         )
 
-        if pnl.unrealized_pnl_pct >= self.tp_pct:
+        if pnl.unrealized_pnl_pct >= self.config.tp_pct:
             self.log.info(
                 f"[{symbol}] TP reached ({pnl.unrealized_pnl_pct:.3%}), "
                 f"forcing SELL for risk management."
@@ -230,7 +253,7 @@ class FoundationalTradingBot(BaseTradingBot):
             self._handle_sell(symbol, price, confidence=1.0)
             return True
 
-        if pnl.unrealized_pnl_pct <= self.sl_pct:
+        if pnl.unrealized_pnl_pct <= self.config.sl_pct:
             self.log.info(
                 f"[{symbol}] SL reached ({pnl.unrealized_pnl_pct:.3%}), "
                 f"forcing SELL for risk management."
@@ -250,10 +273,10 @@ class FoundationalTradingBot(BaseTradingBot):
         Validate and normalize the desired position value for a new long.
         Returns the effective position value or None if the trade should be skipped.
         """
-        if confidence < self.min_confidence:
+        if confidence < self.config.min_confidence:
             self.log.info(
                 f"[{symbol}] Skipping BUY: conf={confidence:.2f} < "
-                f"min_conf={self.min_confidence:.2f}"
+                f"min_conf={self.config.min_confidence:.2f}"
             )
             return None
 
@@ -402,10 +425,10 @@ class FoundationalTradingBot(BaseTradingBot):
         price: float,
         confidence: float,
     ) -> None:
-        if confidence < self.min_confidence:
+        if confidence < self.config.min_confidence:
             self.log.info(
                 f"[{symbol}] Skipping SELL: conf={confidence:.2f} < "
-                f"min_conf={self.min_confidence:.2f}"
+                f"min_conf={self.config.min_confidence:.2f}"
             )
             return
 
@@ -484,11 +507,11 @@ class FoundationalTradingBot(BaseTradingBot):
         if current_pos is None:
             return False
 
-        if price_change < self.drastic_move_threshold:
+        if price_change < self.config.drastic_move_threshold:
             self.log.info(
                 f"[{symbol}] Skipping model decision: same candle, "
                 f"price_change={price_change:.4%} "
-                f"(<{self.drastic_move_threshold:.4%})"
+                f"(<{self.config.drastic_move_threshold:.4%})"
             )
             self._update_position_price(symbol, price)
             self._log_position_status(symbol)
@@ -566,8 +589,8 @@ class FoundationalTradingBot(BaseTradingBot):
             equity_before=equity_before,
             price=price,
             candle_ts=candle_ts,
-            hold_conf_margin=self.hold_conf_margin,
-            hold_sample_every_min=self.hold_sample_every_min,
+            hold_conf_margin=self.config.hold_conf_margin,
+            hold_sample_every_min=self.config.hold_sample_every_min,
         )
 
         # Update position price if there is an open position
@@ -586,6 +609,10 @@ class FoundationalTradingBot(BaseTradingBot):
         self._log_equity()
 
 
+# ---------------------------------------------------------------------- #
+# Bootstrap                                                              #
+# ---------------------------------------------------------------------- #
+
 def check_if_balance():
     exchange = get_binance_client()
     balance = exchange.fetch_balance()
@@ -597,7 +624,6 @@ def check_if_balance():
     else:
         return float(settings.BASE_CAPITAL), 0.0
 
-
 def run_bot_loop() -> None:
     usdt_balance, btc_balance = check_if_balance()
     bot = FoundationalTradingBot(
@@ -607,7 +633,6 @@ def run_bot_loop() -> None:
         min_confidence=0.51,
     )
     bot.run()
-
 
 if __name__ == "__main__":
     run_bot_loop()
