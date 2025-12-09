@@ -69,6 +69,7 @@ class RebalancingConfig:
 
     target_weights: Dict[str, float]
     min_trade_amount: Dict[str, float]
+    symbols: list[str]  # Added for base compatibility
 
     @classmethod
     def from_storage(
@@ -202,6 +203,7 @@ class RebalancingConfig:
             smart_vol_high=smart_vol_high,
             target_weights=target_weights,
             min_trade_amount=min_trade_amount,
+            symbols=symbols,
         )
 
 
@@ -245,9 +247,10 @@ class RebalancingTradingBot(BaseTradingBot):
         storage: Optional[Storage] = None,
         model_client: Optional[ModelClient] = None,
     ) -> None:
+        self._default_sleep_seconds = sleep_seconds
+        self._default_min_confidence = min_confidence
+
         super().__init__(
-            sleep_seconds=sleep_seconds,
-            min_confidence=min_confidence,
             balance=balance,
             storage=storage,
             model_client=model_client,
@@ -283,21 +286,6 @@ class RebalancingTradingBot(BaseTradingBot):
             f"TRADING_MODE={settings.TRADING_MODE}"
         )
 
-        # --------------------------------------------------------------
-        # Configuración dinámica desde BotConfig
-        # --------------------------------------------------------------
-        self.config = RebalancingConfig.from_storage(
-            self.storage,
-            default_sleep_seconds=sleep_seconds,
-            default_min_confidence=min_confidence,
-            symbols=settings.REBALANCING_SYMBOLS,
-        )
-
-        # Mapear sólo lo necesario hacia BaseTradingBot
-        # para que el loop y los thresholds globales usen BotConfig.
-        self.min_confidence = self.config.min_confidence
-        self.sleep_seconds = self.config.sleep_seconds
-
         self.log.info(
             f"[REBALANCING] Target weights: {self.config.target_weights}, "
             f"rebalance_threshold_pct={self.config.rebalance_threshold_pct:.2%}, "
@@ -319,6 +307,14 @@ class RebalancingTradingBot(BaseTradingBot):
 
         self._sync_positions_from_db()
         self.initial_equity = compute_equity(self.capital, self.positions)
+
+    def load_config(self) -> RebalancingConfig:
+        return RebalancingConfig.from_storage(
+            self.storage,
+            default_sleep_seconds=self._default_sleep_seconds,
+            default_min_confidence=self._default_min_confidence,
+            symbols=settings.REBALANCING_SYMBOLS,
+        )
 
     # ------------------------------------------------------------------ #
     # Hooks del BaseTradingBot                                           #
@@ -352,7 +348,7 @@ class RebalancingTradingBot(BaseTradingBot):
             amount = float(current_pos.get("amount", 0.0))
             current_value = amount * price
 
-        target_pct = self.target_weights.get(symbol, 0.0)
+        target_pct = self.config.target_weights.get(symbol, 0.0)
         current_pct = current_value / total_equity if total_equity > 0 else 0.0
         delta_pct = target_pct - current_pct
         return current_value, current_pct, target_pct, delta_pct
@@ -802,7 +798,7 @@ class RebalancingTradingBot(BaseTradingBot):
         )
 
         self._log_position_status(symbol)
-        if symbol == settings.REBALANCING_SYMBOLS[-1]:
+        if symbol == self.config.symbols[-1]:
             self._log_equity()
 
 
@@ -810,8 +806,7 @@ class RebalancingTradingBot(BaseTradingBot):
 # Bootstrap                                                              #
 # ---------------------------------------------------------------------- #
 
-
-def run_bot_loop() -> None:
+def check_if_balance():
     exchange = get_binance_client()
     balance = exchange.fetch_balance()
 
@@ -819,14 +814,16 @@ def run_bot_loop() -> None:
         usdt_balance = float(balance["USDT"]["total"])
     else:
         usdt_balance = float(settings.BASE_CAPITAL)
+    return usdt_balance
 
+def run_bot_loop() -> None:
+    usdt_balance = check_if_balance()
     bot = RebalancingTradingBot(
         balance=usdt_balance,
-        sleep_seconds=60,  # initial hint, overridden by BotConfig if present
+        sleep_seconds=300,  # initial hint, overridden by BotConfig if present
         min_confidence=0.51,
     )
     bot.run()
-
 
 if __name__ == "__main__":
     run_bot_loop()
