@@ -260,6 +260,14 @@ class RebalancingTradingBot(BaseTradingBot):
         self.log = BotLogger("RebalancingTradingBot")
 
         # --------------------------------------------------------------
+        # Feature flag: disable model usage (pure rebalancing)
+        #   - Set USE_MODEL_PREDICTION=false to bypass the model.
+        # --------------------------------------------------------------
+        self.use_model_prediction: bool = str(os.getenv("USE_MODEL_PREDICTION", "false")).lower() in (
+            "1", "true", "yes", "y"
+        )
+
+        # --------------------------------------------------------------
         # Model router por símbolo (BTC, ETH, etc.)
         # --------------------------------------------------------------
         self.model_router = ModelRouter(self.model_client)
@@ -411,33 +419,41 @@ class RebalancingTradingBot(BaseTradingBot):
         """
         Función "pura" (salvo logs) que decide el trade_value final según el modelo.
         """
+        # Hard blocks are dangerous for rebalancing: they can prevent the portfolio
+        # from returning to target weights. We use *soft* gating instead.
 
+        # If the model strongly contradicts the rebalance direction, reduce size.
         if model_action == "buy" and direction == "sell" and model_conf >= min_confidence:
+            scaled_trade_value = trade_value * 0.25
             log.info(
-                f"[{symbol}] Skipping SELL rebalance: model suggests BUY "
-                f"with conf={model_conf:.2f} >= min_conf={min_confidence:.2f}"
+                f"[{symbol}] Reducing SELL rebalance (model suggests BUY) "
+                f"conf={model_conf:.2f} >= min_conf={min_confidence:.2f}. "
+                f"trade_value: {trade_value:.2f} -> {scaled_trade_value:.2f}"
             )
-            return 0.0
+            return scaled_trade_value
 
         if model_action == "sell" and direction == "buy" and model_conf >= min_confidence:
+            scaled_trade_value = trade_value * 0.25
             log.info(
-                f"[{symbol}] Skipping BUY rebalance: model suggests SELL "
-                f"with conf={model_conf:.2f} >= min_conf={min_confidence:.2f}"
+                f"[{symbol}] Reducing BUY rebalance (model suggests SELL) "
+                f"conf={model_conf:.2f} >= min_conf={min_confidence:.2f}. "
+                f"trade_value: {trade_value:.2f} -> {scaled_trade_value:.2f}"
             )
-            return 0.0
+            return scaled_trade_value
 
+        # If model is neutral/low confidence, only lightly reduce (rebalance should still act).
         if model_conf < min_confidence or model_action == "hold":
-            scaled_trade_value = trade_value * 0.5
+            scaled_trade_value = trade_value * 0.80
             log.info(
                 f"[{symbol}] Model neutral/low confidence (action={model_action}, "
-                f"conf={model_conf:.2f}). Executing half trade_value: "
+                f"conf={model_conf:.2f}). Executing reduced trade_value: "
                 f"{scaled_trade_value:.2f} USDT (full={trade_value:.2f})."
             )
             return scaled_trade_value
 
+        # Aligned or not strongly opposing: execute full.
         log.info(
-            f"[{symbol}] Model aligned or not strongly opposing. "
-            f"Executing full trade_value: {trade_value:.2f} USDT "
+            f"[{symbol}] Model not opposing. Executing full trade_value: {trade_value:.2f} USDT "
             f"(direction={direction}, action={model_action}, conf={model_conf:.2f})."
         )
         return trade_value
@@ -735,16 +751,20 @@ class RebalancingTradingBot(BaseTradingBot):
 
         direction = "buy" if desired_value_change > 0 else "sell"
 
-        # Model gating separado
-        trade_value = self._gate_trade_by_model(
-            symbol=symbol,
-            direction=direction,
-            trade_value=trade_value,
-            model_action=model_action,
-            model_conf=model_conf,
-            min_confidence=self.config.min_confidence,
-            log=self.log,
-        )
+        # Model gating (OPTIONAL)
+        # In pure rebalancing mode we do not apply any model-based sizing.
+        if self.use_model_prediction:
+            trade_value = self._gate_trade_by_model(
+                symbol=symbol,
+                direction=direction,
+                trade_value=trade_value,
+                model_action=model_action,
+                model_conf=model_conf,
+                min_confidence=self.config.min_confidence,
+                log=self.log,
+            )
+        else:
+            self.log.info(f"[{symbol}] Pure rebalancing mode: skipping model gating.")
 
         if trade_value <= 0:
             return
@@ -772,9 +792,22 @@ class RebalancingTradingBot(BaseTradingBot):
         self._update_position_price(symbol, price)
         equity_before = compute_equity(self.capital, self.positions)
 
-        action, conf = self._predict_for_symbol(symbol, features)
+        # --------------------------------------------------------------
+        # Model prediction (OPTIONAL)
+        # If you want pure rebalancing without any predictive gating,
+        # set USE_MODEL_PREDICTION=false in your env (.env.rebalancing).
+        # --------------------------------------------------------------
+        if self.use_model_prediction:
+            # NOTE: You can comment this block to disable the model quickly.
+            action, conf = self._predict_for_symbol(symbol, features)
+        else:
+            # Pure rebalancing mode: use a neutral confidence (0.5) to avoid
+            # triggering any "low confidence" heuristics / extra logging.
+            action, conf = "hold", 0.5
+
         self.log.info(
-            f"[{symbol}] model action: {action}, conf={conf:.2f}, price={price:.2f}"
+            f"[{symbol}] model action: {action}, conf={conf:.2f}, price={price:.2f}, "
+            f"use_model_prediction={self.use_model_prediction}"
         )
 
         self._maybe_log_decision(

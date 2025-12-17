@@ -14,6 +14,7 @@ class Settings:
 
     TIMEFRAME = "5m" # 15m
     TRAIN_HISTORY_LIMIT = int(os.getenv("TRAIN_HISTORY_LIMIT", "6000"))
+    USE_MODEL_PREDICTION: str = os.getenv("USE_MODEL_PREDICTION", "false")
 
     # default symbol BTC for foundational bot
     MODEL_URL = os.getenv("MODEL_URL_BTC", "http://localhost:8001/predict")
