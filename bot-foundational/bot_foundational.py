@@ -629,7 +629,7 @@ def run_bot_loop() -> None:
     bot = FoundationalTradingBot(
         balance=usdt_balance,
         initial_btc_amount=btc_balance,
-        sleep_seconds=30,
+        sleep_seconds=300,
         min_confidence=0.51,
     )
     bot.run()
