@@ -5,6 +5,7 @@
 **/.venv/*
 .venv/*
 data/*
+**/data/*
 **/*.db
 vector_db/*
 model/*.pkl
