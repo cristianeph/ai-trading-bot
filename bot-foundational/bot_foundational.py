@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Any, cast
 
 import math
+import time
 import pandas as pd
 
 from common.config import settings
@@ -10,16 +11,6 @@ from common.data_client import place_order, get_binance_client
 from common.base_bot import BaseTradingBot, Position, compute_equity
 from common.model_client import ModelClient
 from common.storage import Storage
-
-# Assuming these constants are defined somewhere; using values from comments or defaults
-DRASTIC_MOVE_THRESHOLD = 0.0005  # Example value
-HOLD_CONF_MARGIN = 0.10
-HOLD_SAMPLE_EVERY_MIN = 10
-# Mantener siempre un colchón en USDT para evitar quedar sin saldo operativo
-DEFAULT_CASH_BUFFER_PCT = 0.05  # 5%
-# Reservar siempre un monto fijo en USDT para comisiones y redondeos
-DEFAULT_FEE_RESERVE_USDT = 2.0
-MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
 
 @dataclass
 class PnL:
@@ -62,34 +53,39 @@ class FoundationalConfig:
 
         cash_buffer_pct = storage.get_bot_config_float(
             "cash_buffer_pct",
-            default=DEFAULT_CASH_BUFFER_PCT,
+            default=settings.DEFAULT_CASH_BUFFER_PCT,
         )
         fee_reserve_usdt = storage.get_bot_config_float(
             "fee_reserve_usdt",
-            default=DEFAULT_FEE_RESERVE_USDT,
+            default=settings.DEFAULT_FEE_RESERVE_USDT,
         )
 
-        tp_pct = storage.get_bot_config_float("tp_pct", default=0.003)
-        sl_pct = storage.get_bot_config_float("sl_pct", default=-0.004)
+        tp_pct = storage.get_bot_config_float(
+            "tp_pct", default=settings.DEFAULT_TP_PCT
+        )
+        sl_pct = storage.get_bot_config_float(
+            "sl_pct", default=settings.DEFAULT_SL_PCT
+        )
 
         drastic_move_threshold = storage.get_bot_config_float(
             "drastic_move_threshold",
-            default=DRASTIC_MOVE_THRESHOLD,
+            default=settings.DRASTIC_MOVE_THRESHOLD,
         )
         hold_conf_margin = storage.get_bot_config_float(
             "hold_conf_margin",
-            default=HOLD_CONF_MARGIN,
+            default=settings.HOLD_CONF_MARGIN,
         )
         hold_sample_every_min = storage.get_bot_config_int(
             "hold_sample_every_min",
-            default=HOLD_SAMPLE_EVERY_MIN,
+            default=settings.HOLD_SAMPLE_EVERY_MIN,
         )
 
         min_trade_amount = {
-            "BTC/USDT": storage.get_bot_config_float(
-                "min_trade_amount.BTC/USDT",
-                default=MIN_TRADE_AMOUNT.get("BTC/USDT", 0.00001),
-            ),
+            symbol: storage.get_bot_config_float(
+                f"min_trade_amount.{symbol}",
+                default=settings.MIN_TRADE_AMOUNT.get(symbol, 0.00001),
+            )
+            for symbol in settings.SYMBOLS
         }
 
         return cls(
@@ -335,34 +331,46 @@ class FoundationalTradingBot(BaseTradingBot):
 
         return position_value
 
-    def _execute_buy_order(
+    def _execute_order(
         self,
         symbol: str,
+        side: str,
         amount: float,
         price: float,
+        retries: int = 3,
     ) -> tuple[float, float, float]:
         """
-        Execute a buy order and return (executed_amount, avg_price, entry_fee_usdt).
+        Execute an order and return (executed_amount, avg_price, fee_usdt).
+        Implements a simple retry logic for connectivity or transient errors.
         """
-        try:
-            order = place_order(symbol, "buy", amount)
-        except Exception as exc:  # noqa: BLE001
-            self.log.error(f"[{symbol}] Error placing BUY order: {exc}")
-            raise
+        last_exception = None
+        for attempt in range(retries):
+            try:
+                order = place_order(symbol, side, amount)
+                if isinstance(order, dict):
+                    executed_amount = float(order.get("amount") or amount)
+                    avg_price = float(order.get("average") or order.get("price") or price)
+                    fee_info = order.get("fee") or {}
+                    fee_currency = fee_info.get("currency")
+                    fee_cost = float(fee_info.get("cost") or 0.0)
+                    fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
+                else:
+                    executed_amount = amount
+                    avg_price = price
+                    fee_usdt = 0.0
 
-        if isinstance(order, dict):
-            executed_amount = float(order.get("amount") or amount)
-            avg_price = float(order.get("average") or order.get("price") or price)
-            fee_info = order.get("fee") or {}
-            fee_currency = fee_info.get("currency")
-            fee_cost = float(fee_info.get("cost") or 0.0)
-            entry_fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
-        else:
-            executed_amount = amount
-            avg_price = price
-            entry_fee_usdt = 0.0
+                return executed_amount, avg_price, fee_usdt
 
-        return executed_amount, avg_price, entry_fee_usdt
+            except Exception as exc:  # noqa: BLE001
+                last_exception = exc
+                self.log.error(
+                    f"[{symbol}] Attempt {attempt + 1}/{retries} failed to place {side.upper()} order: {exc}"
+                )
+                if attempt < retries - 1:
+                    time.sleep(1)  # brief pause before retry
+
+        self.log.error(f"[{symbol}] All {retries} attempts failed to place {side.upper()} order. Final error: {last_exception}")
+        raise last_exception if last_exception else Exception(f"Unknown error placing {side.upper()} order")
 
     def _handle_buy(
         self,
@@ -380,8 +388,8 @@ class FoundationalTradingBot(BaseTradingBot):
         amount = position_value / price
 
         try:
-            executed_amount, avg_price, entry_fee_usdt = self._execute_buy_order(
-                symbol, amount, price
+            executed_amount, avg_price, entry_fee_usdt = self._execute_order(
+                symbol, "buy", amount, price
             )
         except Exception:
             return
@@ -414,50 +422,6 @@ class FoundationalTradingBot(BaseTradingBot):
             f"entry={avg_price:.2f}, capital={self.capital:.2f}"
         )
 
-    def _execute_sell_order(
-        self,
-        symbol: str,
-        amount: float,
-        price: float,
-    ) -> tuple[float, float]:
-        """
-        Execute a sell order and return (exit_price, exit_fee_usdt).
-        """
-        try:
-            order = place_order(symbol, "sell", amount)
-        except Exception as exc:  # noqa: BLE001
-            self.log.error(f"[{symbol}] Error placing SELL order: {exc}")
-            raise
-
-        if isinstance(order, dict):
-            exit_price = float(order.get("average") or order.get("price") or price)
-            fee_info = order.get("fee") or {}
-            fee_currency = fee_info.get("currency")
-            fee_cost = float(fee_info.get("cost") or 0.0)
-            exit_fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
-        else:
-            exit_price = price
-            exit_fee_usdt = 0.0
-
-        return exit_price, exit_fee_usdt
-
-    def _compute_realized_pnl(
-        self,
-        amount: float,
-        entry_price: float,
-        entry_fee_usdt: float,
-        exit_price: float,
-        exit_fee_usdt: float,
-    ) -> tuple[float, float]:
-        """
-        Compute realized PnL (USDT) and net proceeds for a closed position.
-        """
-        cost = amount * entry_price + entry_fee_usdt
-        proceeds = amount * exit_price
-        net_proceeds = proceeds - exit_fee_usdt
-        pnl = net_proceeds - cost
-        return pnl, net_proceeds
-
     def _handle_sell(
         self,
         symbol: str,
@@ -484,14 +448,14 @@ class FoundationalTradingBot(BaseTradingBot):
         entry_fee_usdt = float(current_pos.get("entry_fee_usdt", 0.0))
 
         try:
-            exit_price, exit_fee_usdt = self._execute_sell_order(
-                symbol, amount, price
+            executed_amount, exit_price, exit_fee_usdt = self._execute_order(
+                symbol, "sell", amount, price
             )
         except Exception:
             return
 
         pnl, net_proceeds = self._compute_realized_pnl(
-            amount=amount,
+            amount=executed_amount,
             entry_price=entry_price,
             entry_fee_usdt=entry_fee_usdt,
             exit_price=exit_price,
@@ -505,12 +469,12 @@ class FoundationalTradingBot(BaseTradingBot):
             symbol=symbol,
             side="sell",
             price=exit_price,
-            amount=amount,
+            amount=executed_amount,
             mode=settings.TRADING_MODE,
             pnl=pnl,
         )
         self.log.info(
-            f"[{symbol}] Close long: amount={amount:.6f}, "
+            f"[{symbol}] Close long: amount={executed_amount:.6f}, "
             f"entry={entry_price:.2f}, exit={exit_price:.2f}, "
             f"pnl={pnl:.2f}, capital={self.capital:.2f}"
         )

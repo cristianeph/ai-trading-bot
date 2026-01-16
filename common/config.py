@@ -21,4 +21,14 @@ class Settings:
 
     REBALANCING_SYMBOLS = ["BTC/USDT", "ETH/USDT"]
 
+    # Bot Foundational Constants
+    DRASTIC_MOVE_THRESHOLD = 0.0005
+    HOLD_CONF_MARGIN = 0.10
+    HOLD_SAMPLE_EVERY_MIN = 10
+    DEFAULT_CASH_BUFFER_PCT = 0.05
+    DEFAULT_FEE_RESERVE_USDT = 2.0
+    DEFAULT_TP_PCT = 0.003
+    DEFAULT_SL_PCT = -0.004
+    MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
+
 settings = Settings()
