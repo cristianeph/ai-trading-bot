@@ -98,6 +98,14 @@ class BaseTradingBot(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def _liquidate_position_to_base(self, symbol: str, price: float) -> None:
+        """Liquida (vende) una posición abierta de `symbol` hacia la moneda base (USDT).
+
+        La estrategia concreta define cómo ejecutar el SELL (market/limit), fees, logging, etc.
+        """
+        raise NotImplementedError
+
     def _fetch_latest_market_state(
         self, symbol: str
     ) -> Optional[tuple[pd.Series, float, list[float]]]:
@@ -315,6 +323,32 @@ class BaseTradingBot(ABC):
         - llamar a _log_position_status / _log_equity según convenga.
         """
         raise NotImplementedError
+
+    def liquidate_all_positions_to_base(self) -> None:
+        """Vende TODAS las posiciones abiertas para quedar en USDT (moneda base)."""
+        self.log.info("[BOT] Liquidating ALL open positions into base coin (USDT)...")
+
+        # Iteramos sobre una lista estable por si la estrategia muta `self.positions`.
+        for symbol in list(self.symbols):
+            pos = self.positions.get(symbol)
+            if pos is None:
+                continue
+
+            market_state = self._fetch_latest_market_state(symbol)
+            if market_state is None:
+                self.log.error(f"[{symbol}] Cannot liquidate: failed to fetch latest market state")
+                continue
+
+            _latest_row, price, _features = market_state
+
+            try:
+                self._liquidate_position_to_base(symbol, float(price))
+            except Exception as exc:  # noqa: BLE001
+                self.log.error(f"[{symbol}] Error liquidating position: {exc}")
+
+        # Snapshot final de equity post-liquidación
+        self._log_equity()
+        self.log.info("[BOT] Liquidation process finished.")
 
     def run(self) -> None:
         self.log.info("[BOT] Starting trading loop...")
