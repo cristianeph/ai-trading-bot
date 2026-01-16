@@ -30,5 +30,9 @@ class Settings:
     DEFAULT_TP_PCT = 0.003
     DEFAULT_SL_PCT = -0.004
     MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
+    DEFAULT_MAX_DRAWDOWN_PCT = 0.10  # 10% stop bot if equity falls by this much
+
+    # Feature names to avoid magic strings
+    FEATURE_COLUMNS = ["ma_ratio", "rsi_14", "vol_20"]
 
 settings = Settings()

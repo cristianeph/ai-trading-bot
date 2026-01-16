@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, Optional, Any, TypedDict
 
 import pandas as pd
@@ -25,6 +26,14 @@ class Position(TypedDict, total=False):
 class DecisionState(TypedDict, total=False):
     candle_ts: Any
     price: Optional[float]
+
+
+@dataclass
+class PnL:
+    invested_usdt: float
+    current_value_usdt: float
+    unrealized_pnl_usdt: float
+    unrealized_pnl_pct: float
 
 
 def compute_equity(cash: float, positions: Dict[str, Optional[Position]]) -> float:
@@ -136,7 +145,7 @@ class BaseTradingBot(ABC):
             return None
 
         latest_row = df.iloc[-1]
-        features = latest_row[["ma_ratio", "rsi_14", "vol_20"]].tolist()
+        features = latest_row[settings.FEATURE_COLUMNS].tolist()
         price: float = float(latest_row["close"])
 
         return latest_row, price, features
@@ -145,6 +154,45 @@ class BaseTradingBot(ABC):
         current_pos = self.positions.get(symbol)
         if current_pos is not None:
             current_pos["last_price"] = price
+
+    def _compute_unrealized_pnl(
+        self,
+        amount: float,
+        entry_price: float,
+        entry_fee_usdt: float,
+        current_price: float,
+    ) -> PnL:
+        """
+        Compute unrealized PnL for a long position.
+
+        Returns:
+            PnL: invested capital, current value, unrealized PnL in USDT, and percentage.
+        """
+        invested_usdt = amount * entry_price + entry_fee_usdt
+        current_value_usdt = amount * current_price
+        unrealized_pnl_usdt = current_value_usdt - invested_usdt
+        unrealized_pnl_pct = (
+            unrealized_pnl_usdt / invested_usdt if invested_usdt > 0 else 0.0
+        )
+        return PnL(
+            invested_usdt, current_value_usdt, unrealized_pnl_usdt, unrealized_pnl_pct
+        )
+
+    def _compute_realized_pnl(
+        self,
+        amount: float,
+        entry_price: float,
+        entry_fee_usdt: float,
+        exit_price: float,
+        exit_fee_usdt: float,
+    ) -> tuple[float, float]:
+        """
+        Calcula el PnL realizado y los ingresos netos tras una venta.
+        """
+        invested_usdt = amount * entry_price + entry_fee_usdt
+        revenue_usdt = amount * exit_price - exit_fee_usdt
+        pnl = revenue_usdt - invested_usdt
+        return pnl, revenue_usdt
 
     def _log_equity(self) -> None:
         equity = compute_equity(self.capital, self.positions)
@@ -217,9 +265,7 @@ class BaseTradingBot(ABC):
         if not should_log:
             return
 
-        ma_ratio = float(latest_row.get("ma_ratio", 0.0))
-        rsi_14 = float(latest_row.get("rsi_14", 0.0))
-        vol_20 = float(latest_row.get("vol_20", 0.0))
+        feature_values = {feat: float(latest_row.get(feat, 0.0)) for feat in settings.FEATURE_COLUMNS}
 
         candle_ts_str = str(candle_ts) if candle_ts is not None else None
 
@@ -227,9 +273,9 @@ class BaseTradingBot(ABC):
             symbol=symbol,
             action=action,
             confidence=confidence,
-            ma_ratio=ma_ratio,
-            rsi_14=rsi_14,
-            vol_20=vol_20,
+            ma_ratio=feature_values.get("ma_ratio", 0.0),
+            rsi_14=feature_values.get("rsi_14", 0.0),
+            vol_20=feature_values.get("vol_20", 0.0),
             mode=settings.TRADING_MODE,
             equity_before=equity_before,
             price=price,

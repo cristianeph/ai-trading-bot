@@ -8,17 +8,9 @@ import pandas as pd
 from common.config import settings
 from common.logger import BotLogger
 from common.data_client import place_order, get_binance_client
-from common.base_bot import BaseTradingBot, Position, compute_equity
+from common.base_bot import BaseTradingBot, Position, compute_equity, PnL
 from common.model_client import ModelClient
 from common.storage import Storage
-
-@dataclass
-class PnL:
-    invested_usdt: float
-    current_value_usdt: float
-    unrealized_pnl_usdt: float
-    unrealized_pnl_pct: float
-
 
 @dataclass
 class FoundationalConfig:
@@ -34,6 +26,33 @@ class FoundationalConfig:
     min_trade_amount: Dict[str, float]
     symbols: list[str]
     bot_type: str
+    max_drawdown_pct: float
+
+    def validate(self) -> None:
+        """
+        Validate configuration parameters.
+        Raises ValueError if any parameter is out of expected range.
+        """
+        if not (0 <= self.min_confidence <= 1):
+            raise ValueError(f"min_confidence must be between 0 and 1, got {self.min_confidence}")
+        if self.sleep_seconds <= 0:
+            raise ValueError(f"sleep_seconds must be positive, got {self.sleep_seconds}")
+        if not (0 <= self.cash_buffer_pct <= 1):
+            raise ValueError(f"cash_buffer_pct must be between 0 and 1, got {self.cash_buffer_pct}")
+        if self.fee_reserve_usdt < 0:
+            raise ValueError(f"fee_reserve_usdt must be non-negative, got {self.fee_reserve_usdt}")
+        if self.tp_pct <= 0:
+            raise ValueError(f"tp_pct (Take Profit) must be positive, got {self.tp_pct}")
+        if self.sl_pct >= 0:
+            raise ValueError(f"sl_pct (Stop Loss) must be negative, got {self.sl_pct}")
+        if self.drastic_move_threshold <= 0:
+            raise ValueError(f"drastic_move_threshold must be positive, got {self.drastic_move_threshold}")
+        if not (0 <= self.hold_conf_margin <= 1):
+            raise ValueError(f"hold_conf_margin must be between 0 and 1, got {self.hold_conf_margin}")
+        if self.hold_sample_every_min <= 0:
+            raise ValueError(f"hold_sample_every_min must be positive, got {self.hold_sample_every_min}")
+        if self.max_drawdown_pct <= 0 or self.max_drawdown_pct >= 1:
+            raise ValueError(f"max_drawdown_pct must be between 0 and 1, got {self.max_drawdown_pct}")
 
     @classmethod
     def from_storage(
@@ -88,7 +107,12 @@ class FoundationalConfig:
             for symbol in settings.SYMBOLS
         }
 
-        return cls(
+        max_drawdown_pct = storage.get_bot_config_float(
+            "max_drawdown_pct",
+            default=settings.DEFAULT_MAX_DRAWDOWN_PCT,
+        )
+
+        config = cls(
             min_confidence=min_confidence,
             sleep_seconds=sleep_seconds,
             cash_buffer_pct=cash_buffer_pct,
@@ -101,7 +125,10 @@ class FoundationalConfig:
             min_trade_amount=min_trade_amount,
             symbols=settings.SYMBOLS,
             bot_type="foundational",
+            max_drawdown_pct=max_drawdown_pct,
         )
+        config.validate()
+        return config
 
 
 class FoundationalTradingBot(BaseTradingBot):
@@ -143,6 +170,9 @@ class FoundationalTradingBot(BaseTradingBot):
         self.initial_equity = compute_equity(self.capital, self.positions)
 
     def load_config(self) -> FoundationalConfig:
+        """
+        Load strategy-specific configuration from Storage.
+        """
         return FoundationalConfig.from_storage(
             self.storage,
             default_min_confidence=self._default_min_confidence,
@@ -154,7 +184,9 @@ class FoundationalTradingBot(BaseTradingBot):
     # ------------------------------------------------------------------ #
 
     def _available_capital_for_new_trades(self) -> float:
-        """Capital disponible para nuevas compras, respetando colchón y reserva de fees."""
+        """
+        Calculate capital available for new trades, respecting buffers and fee reserves.
+        """
         buffer_usdt = max(0.0, float(self.capital) * float(self.config.cash_buffer_pct))
         reserve_usdt = max(0.0, float(self.config.fee_reserve_usdt))
         available = float(self.capital) - buffer_usdt - reserve_usdt
@@ -170,7 +202,6 @@ class FoundationalTradingBot(BaseTradingBot):
         Otherwise, the existing BTC balance is treated as external/dust and is
         not managed as an open position by this bot-foundational.
         """
-
         try:
             min_amount = self.config.min_trade_amount.get("BTC/USDT")
             if min_amount is not None and initial_btc_amount < min_amount:
@@ -225,28 +256,10 @@ class FoundationalTradingBot(BaseTradingBot):
         except Exception as init_exc:  # noqa: BLE001
             self.log.error(f"[BTC/USDT] Error initializing existing BTC position: {init_exc}")
 
-    def _compute_unrealized_pnl(
-        self,
-        amount: float,
-        entry_price: float,
-        entry_fee_usdt: float,
-        current_price: float,
-    ) -> PnL:
-        """
-        Compute unrealized PnL for a long position.
-
-        Returns:
-            PnL: invested capital, current value, unrealized PnL in USDT, and percentage.
-        """
-        invested_usdt = amount * entry_price + entry_fee_usdt
-        current_value_usdt = amount * current_price
-        unrealized_pnl_usdt = current_value_usdt - invested_usdt
-        unrealized_pnl_pct = (
-            unrealized_pnl_usdt / invested_usdt if invested_usdt > 0 else 0.0
-        )
-        return PnL(invested_usdt, current_value_usdt, unrealized_pnl_usdt, unrealized_pnl_pct)
-
     def _maybe_close_position_by_pnl(self, symbol: str, price: float) -> bool:
+        """
+        Check if the position should be closed based on TP/SL thresholds.
+        """
         current_pos = self.positions.get(symbol)
         if current_pos is None or current_pos.get("side") != "buy":
             return False
@@ -379,6 +392,9 @@ class FoundationalTradingBot(BaseTradingBot):
         confidence: float,
         position_value: Optional[float] = None,
     ) -> None:
+        """
+        Handle the logic for buying an asset and opening a long position.
+        """
         position_value = self._prepare_position_value_for_long(
             symbol, confidence, position_value
         )
@@ -428,6 +444,9 @@ class FoundationalTradingBot(BaseTradingBot):
         price: float,
         confidence: float,
     ) -> None:
+        """
+        Handle the logic for selling an asset and closing a long position.
+        """
         if confidence < self.config.min_confidence:
             self.log.info(
                 f"[{symbol}] Skipping SELL: conf={confidence:.2f} < "
@@ -484,10 +503,8 @@ class FoundationalTradingBot(BaseTradingBot):
     # ------------------------------------------------------------------ #
 
     def _liquidate_position_to_base(self, symbol: str, price: float) -> None:
-        """Liquida una posición abierta del símbolo hacia USDT.
-
-        Para Foundational (solo long), esto significa forzar un SELL usando el flujo
-        normal de la estrategia para mantener logging/fees/Storage consistentes.
+        """
+        Liquidate an open position of the symbol to USDT.
         """
         current_pos = self.positions.get(symbol)
         if current_pos is None or current_pos.get("side") != "buy":
@@ -500,7 +517,9 @@ class FoundationalTradingBot(BaseTradingBot):
         self._handle_sell(symbol, price, confidence=1.0)
 
     def get_profit(self) -> None:
-        """Alias público: vende todas las posiciones abiertas y deja el bot en USDT."""
+        """
+        Public alias: sell all open positions and leave the bot in USDT.
+        """
         self.liquidate_all_positions_to_base()
 
     # ------------------------------------------------------------------ #
@@ -584,6 +603,23 @@ class FoundationalTradingBot(BaseTradingBot):
         elif action == "sell":
             self._handle_sell(symbol, price, confidence)
 
+    def _check_max_drawdown(self) -> None:
+        """
+        Implement a maximum drawdown circuit breaker to stop the bot if losses
+        exceed a certain threshold.
+        """
+        equity = compute_equity(self.capital, self.positions)
+        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
+
+        if drawdown_pct >= self.config.max_drawdown_pct:
+            self.log.error(
+                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
+                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
+                f"Stopping bot."
+            )
+            self.get_profit()
+            raise SystemExit("Max Drawdown circuit breaker triggered.")
+
     def _process_symbol_decision(
         self,
         *,
@@ -593,6 +629,11 @@ class FoundationalTradingBot(BaseTradingBot):
         features: list[float],
         candle_ts: Any,
     ) -> None:
+        """
+        Process the decision for a specific symbol based on model prediction and risk management.
+        """
+        self._check_max_drawdown()
+
         if self._should_skip_decision_same_candle(symbol, candle_ts, price):
             return
 
@@ -642,6 +683,9 @@ class FoundationalTradingBot(BaseTradingBot):
 # ---------------------------------------------------------------------- #
 
 def check_if_balance():
+    """
+    Check the current balance of the account on the exchange.
+    """
     exchange = get_binance_client()
     balance = exchange.fetch_balance()
 
@@ -653,6 +697,9 @@ def check_if_balance():
         return float(settings.BASE_CAPITAL), 0.0
 
 def run_bot_loop() -> None:
+    """
+    Main entry point to run the trading bot loop.
+    """
     usdt_balance, btc_balance = check_if_balance()
     bot = FoundationalTradingBot(
         balance=usdt_balance,

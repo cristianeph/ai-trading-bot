@@ -6,7 +6,10 @@ class BotLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
-        formatter = logging.Formatter("[%(levelname)s] [%(name)s] %(message)s")
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
         handler.setFormatter(formatter)
         if not self.logger.handlers:
             self.logger.addHandler(handler)
