@@ -337,7 +337,7 @@ class FoundationalTradingBot(BaseTradingBot):
         side: str,
         amount: float,
         price: float,
-        retries: int = 3,
+        retries: int = 2,
     ) -> tuple[float, float, float]:
         """
         Execute an order and return (executed_amount, avg_price, fee_usdt).
