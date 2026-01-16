@@ -15,6 +15,10 @@ from common.storage import Storage
 DRASTIC_MOVE_THRESHOLD = 0.0005  # Example value
 HOLD_CONF_MARGIN = 0.10
 HOLD_SAMPLE_EVERY_MIN = 10
+# Mantener siempre un colchón en USDT para evitar quedar sin saldo operativo
+DEFAULT_CASH_BUFFER_PCT = 0.05  # 5%
+# Reservar siempre un monto fijo en USDT para comisiones y redondeos
+DEFAULT_FEE_RESERVE_USDT = 2.0
 MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
 
 @dataclass
@@ -29,6 +33,8 @@ class PnL:
 class FoundationalConfig:
     min_confidence: float
     sleep_seconds: int
+    cash_buffer_pct: float
+    fee_reserve_usdt: float
     tp_pct: float
     sl_pct: float
     drastic_move_threshold: float
@@ -52,6 +58,15 @@ class FoundationalConfig:
         sleep_seconds = storage.get_bot_config_int(
             "sleep_seconds",
             default=default_sleep_seconds,
+        )
+
+        cash_buffer_pct = storage.get_bot_config_float(
+            "cash_buffer_pct",
+            default=DEFAULT_CASH_BUFFER_PCT,
+        )
+        fee_reserve_usdt = storage.get_bot_config_float(
+            "fee_reserve_usdt",
+            default=DEFAULT_FEE_RESERVE_USDT,
         )
 
         tp_pct = storage.get_bot_config_float("tp_pct", default=0.003)
@@ -80,6 +95,8 @@ class FoundationalConfig:
         return cls(
             min_confidence=min_confidence,
             sleep_seconds=sleep_seconds,
+            cash_buffer_pct=cash_buffer_pct,
+            fee_reserve_usdt=fee_reserve_usdt,
             tp_pct=tp_pct,
             sl_pct=sl_pct,
             drastic_move_threshold=drastic_move_threshold,
@@ -139,6 +156,13 @@ class FoundationalTradingBot(BaseTradingBot):
     # ------------------------------------------------------------------ #
     # Strategy-specific helpers                                          #
     # ------------------------------------------------------------------ #
+
+    def _available_capital_for_new_trades(self) -> float:
+        """Capital disponible para nuevas compras, respetando colchón y reserva de fees."""
+        buffer_usdt = max(0.0, float(self.capital) * float(self.config.cash_buffer_pct))
+        reserve_usdt = max(0.0, float(self.config.fee_reserve_usdt))
+        available = float(self.capital) - buffer_usdt - reserve_usdt
+        return max(0.0, available)
 
     def _init_existing_btc(self, initial_btc_amount: float) -> None:
         """
@@ -288,9 +312,24 @@ class FoundationalTradingBot(BaseTradingBot):
             return None
 
         if position_value is None:
-            position_value = self.capital * settings.POSITION_SIZE_PCT
+            # Nunca usar 100% del capital: respeta colchón + reserva de fees
+            available = self._available_capital_for_new_trades()
+            position_value = available * settings.POSITION_SIZE_PCT
+        else:
+            # Si viene un valor dinámico, igual lo capamos por el capital disponible
+            available = self._available_capital_for_new_trades()
+            position_value = min(float(position_value), available)
 
-        if position_value <= 0 or not math.isfinite(position_value):
+        # Si no queda capital disponible para operar, skip
+        if position_value <= 0:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: insufficient available capital after buffers "
+                f"(capital={self.capital:.2f}, cash_buffer_pct={self.config.cash_buffer_pct:.2%}, "
+                f"fee_reserve_usdt={self.config.fee_reserve_usdt:.2f})"
+            )
+            return None
+
+        if not math.isfinite(position_value):
             self.log.info(f"[{symbol}] position_value invalid: {position_value}")
             return None
 
@@ -477,6 +516,30 @@ class FoundationalTradingBot(BaseTradingBot):
         )
 
     # ------------------------------------------------------------------ #
+    # Get Profit / Liquidation                                           #
+    # ------------------------------------------------------------------ #
+
+    def _liquidate_position_to_base(self, symbol: str, price: float) -> None:
+        """Liquida una posición abierta del símbolo hacia USDT.
+
+        Para Foundational (solo long), esto significa forzar un SELL usando el flujo
+        normal de la estrategia para mantener logging/fees/Storage consistentes.
+        """
+        current_pos = self.positions.get(symbol)
+        if current_pos is None or current_pos.get("side") != "buy":
+            return
+
+        self.log.info(
+            f"[{symbol}] [GET_PROFIT] Forcing liquidation SELL at price≈{price:.2f}"
+        )
+        # Usamos confidence=1.0 para bypass del min_confidence típico.
+        self._handle_sell(symbol, price, confidence=1.0)
+
+    def get_profit(self) -> None:
+        """Alias público: vende todas las posiciones abiertas y deja el bot en USDT."""
+        self.liquidate_all_positions_to_base()
+
+    # ------------------------------------------------------------------ #
     # Strategy hook implementation                                       #
     # ------------------------------------------------------------------ #
 
@@ -544,8 +607,9 @@ class FoundationalTradingBot(BaseTradingBot):
                 elif vol_20 < 0.002:
                     risk_factor = 1.2
 
-            dynamic_position_value = self.capital * base_pct * risk_factor
-            dynamic_position_value = max(0.0, min(dynamic_position_value, self.capital))
+            available = self._available_capital_for_new_trades()
+            dynamic_position_value = available * base_pct * risk_factor
+            dynamic_position_value = max(0.0, min(dynamic_position_value, available))
 
             self._handle_buy(
                 symbol,
@@ -632,6 +696,8 @@ def run_bot_loop() -> None:
         sleep_seconds=300,
         min_confidence=0.51,
     )
+    # Get profit (liquidate all positions into USDT) and exit
+    # bot.get_profit()
     bot.run()
 
 if __name__ == "__main__":
