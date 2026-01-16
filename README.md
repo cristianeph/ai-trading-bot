@@ -43,3 +43,7 @@ To make changes on sqlmodel entities:
 `alembic stamp head`
 
 `alembic upgrade head`
+
+# 4. Restart only an specific service
+
+docker compose up -d --build bot_foundational
