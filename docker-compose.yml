@@ -34,8 +34,5 @@ services:
       dockerfile: bot-rebalancing/bot-rebalancing.Dockerfile
     container_name: crypto-bot-rebalancing
     restart: unless-stopped
-    depends_on:
-      - model_btc
-      - model_eth
     env_file:
       - .env.rebalancing
