@@ -20,8 +20,8 @@ from common.futures_base_bot import (
 
 @dataclass
 class FoundationalFuturesConfig(FuturesBotCommonConfig):
-    tp_pct: float
-    sl_pct: float
+    target_favorable_move_pct: float
+    max_adverse_move_pct: float
     allow_shorts: bool
     drastic_move_threshold: float
     hold_conf_margin: float
@@ -35,10 +35,10 @@ class FoundationalFuturesConfig(FuturesBotCommonConfig):
             raise ValueError(f"sleep_seconds must be positive, got {self.sleep_seconds}")
         if not (0 <= self.cash_buffer_pct <= 1):
             raise ValueError(f"cash_buffer_pct must be between 0 and 1, got {self.cash_buffer_pct}")
-        if self.tp_pct <= 0:
-            raise ValueError(f"tp_pct must be positive, got {self.tp_pct}")
-        if self.sl_pct >= 0:
-            raise ValueError(f"sl_pct must be negative, got {self.sl_pct}")
+        if self.target_favorable_move_pct <= 0:
+            raise ValueError(f"target_favorable_move_pct must be positive, got {self.target_favorable_move_pct}")
+        if self.max_adverse_move_pct >= 0:
+            raise ValueError(f"max_adverse_move_pct must be negative, got {self.max_adverse_move_pct}")
         if self.drastic_move_threshold <= 0:
             raise ValueError(f"drastic_move_threshold must be positive, got {self.drastic_move_threshold}")
         if self.max_drawdown_pct <= 0 or self.max_drawdown_pct >= 1:
@@ -50,7 +50,7 @@ class FoundationalFuturesConfig(FuturesBotCommonConfig):
         storage: Storage,
         default_min_confidence: float,
         default_sleep_seconds: int,
-    ) -> FoundationalFuturesConfig:
+    ) -> "FoundationalFuturesConfig":
         min_confidence = storage.get_bot_config_float("min_confidence", default=default_min_confidence)
         sleep_seconds = storage.get_bot_config_int("sleep_seconds", default=default_sleep_seconds)
 
@@ -79,8 +79,8 @@ class FoundationalFuturesConfig(FuturesBotCommonConfig):
             bot_type="foundational_futures",
             leverage=int(leverage),
             margin_mode=str(margin_mode),
-            tp_pct=float(tp_pct),
-            sl_pct=float(sl_pct),
+            target_favorable_move_pct=float(tp_pct),
+            max_adverse_move_pct=float(sl_pct),
             allow_shorts=bool(allow_shorts),
             drastic_move_threshold=drastic_move_threshold,
             hold_conf_margin=hold_conf_margin,
@@ -254,95 +254,127 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
     # -----------------------------
     # Position management
     # -----------------------------
-    def _position_value_usdt(self, confidence: float) -> float:
-        """
-        Sizing conservador: usa POSITION_SIZE_PCT del capital disponible (buffers ya aplicados).
+    def _risk_budget(self, confidence: float) -> float:
+        """Return the *risk budget* (margin to allocate) for a new position.
+        Currency-agnostic concepts used in this bot:
+        - risk_budget: the amount of quote-currency collateral you are willing to lock as margin
+          for this position (ISOLATED). This is the *maximum* you can lose on this position if it
+          gets fully liquidated (ignoring fees/funding).
+        - exposure_multiplier: how many times the price movement is amplified.
+          In Binance terms this is `leverage`, but conceptually it is the multiplier that turns
+          a risk budget into *price exposure*.
+            price_exposure = risk_budget * exposure_multiplier
+        - contract_size: how many units of the base asset you control (e.g., BTC) so that your
+          price exposure matches the value above.
+            contract_size = price_exposure / price
+        Practical example:
+            available_equity = 1,000
+            POSITION_SIZE_PCT = 0.10  -> risk_budget = 100
+            exposure_multiplier = 2   -> price_exposure = 200
+            price = 50,000            -> contract_size = 200 / 50,000 = 0.004
+
+            If price moves +5% and you close, PnL ≈ +5% of price_exposure = +10 (minus fees).
+            If price moves -5%, PnL ≈ -10.
+        NOTE:
+        - This bot compounds automatically *when positions are closed*: realized PnL is added to
+          free capital and therefore influences the next `risk_budget`.
+        - `confidence` is accepted for future extensions (dynamic sizing), but not used yet.
         """
         available = self._available_capital_for_new_trades()
-        value = float(available) * float(settings.POSITION_SIZE_PCT)
-        return max(0.0, value)
+        risk_budget = float(available) * float(settings.POSITION_SIZE_PCT)
+        return max(0.0, risk_budget)
 
     def _open_long(self, symbol: str, price: float, confidence: float) -> None:
         self._ensure_futures_settings(symbol)
 
-        position_value = self._position_value_usdt(confidence)
-        if position_value <= 0:
+        risk_budget = self._risk_budget(confidence)
+        if risk_budget <= 0:
             self.log.info(f"[{symbol}] Skipping LONG: insufficient available capital.")
             return
 
-        amount = position_value / price
-        if amount <= 0 or not math.isfinite(amount):
-            self.log.info(f"[{symbol}] Invalid amount for LONG: {amount}")
+        exposure_multiplier = int(self.config.leverage)
+        price_exposure = risk_budget * exposure_multiplier
+        contract_size = price_exposure / price
+        if contract_size <= 0 or not math.isfinite(contract_size):
+            self.log.info(f"[{symbol}] Invalid contract_size for LONG: {contract_size}")
             return
 
-        order = self._create_order(symbol, "buy", float(amount), reduce_only=False)
+        order = self._create_order(symbol, "buy", float(contract_size), reduce_only=False)
         avg_price = float(order.get("average") or price)
         fee = float((order.get("fee") or {}).get("cost") or 0.0)
 
         self.positions[symbol] = FuturesPosition(
             symbol=symbol,
             side="long",
-            amount=float(amount),
+            amount=float(contract_size),
             entry_price=avg_price,
             entry_fee_usdt=fee,
             opened_at_ts=time.time(),
-            leverage=int(self.config.leverage),
+            leverage=exposure_multiplier,
             margin_mode=str(self.config.margin_mode),
         )
-        self.capital -= (amount * avg_price / self.config.leverage) + fee
+
+        # In ISOLATED futures, we treat `risk_budget` as the margin locked for this position.
+        # The exchange will manage the actual margin mechanics; this is the bot's internal
+        # accounting for "free capital" available for the next trades.
+        self.capital -= risk_budget + fee
 
         self.storage.log_trade(
             symbol=symbol,
             side="buy",
             price=avg_price,
-            amount=amount,
+            amount=contract_size,
             mode=settings.TRADING_MODE,
             pnl=0.0,
             bot_type=self.config.bot_type,
         )
 
-        self.log.info(f"[{symbol}] Open LONG amount={amount:.8f} entry={avg_price:.2f}")
+        self.log.info(f"[{symbol}] Open LONG amount={contract_size:.8f} entry={avg_price:.2f}")
 
     def _open_short(self, symbol: str, price: float, confidence: float) -> None:
         self._ensure_futures_settings(symbol)
 
-        position_value = self._position_value_usdt(confidence)
-        if position_value <= 0:
+        risk_budget = self._risk_budget(confidence)
+        if risk_budget <= 0:
             self.log.info(f"[{symbol}] Skipping SHORT: insufficient available capital.")
             return
 
-        amount = position_value / price
-        if amount <= 0 or not math.isfinite(amount):
-            self.log.info(f"[{symbol}] Invalid amount for SHORT: {amount}")
+        exposure_multiplier = int(self.config.leverage)
+        price_exposure = risk_budget * exposure_multiplier
+        contract_size = price_exposure / price
+        if contract_size <= 0 or not math.isfinite(contract_size):
+            self.log.info(f"[{symbol}] Invalid contract_size for SHORT: {contract_size}")
             return
 
-        order = self._create_order(symbol, "sell", float(amount), reduce_only=False)
+        order = self._create_order(symbol, "sell", float(contract_size), reduce_only=False)
         avg_price = float(order.get("average") or price)
         fee = float((order.get("fee") or {}).get("cost") or 0.0)
 
         self.positions[symbol] = FuturesPosition(
             symbol=symbol,
             side="short",
-            amount=float(amount),
+            amount=float(contract_size),
             entry_price=avg_price,
             entry_fee_usdt=fee,
             opened_at_ts=time.time(),
-            leverage=int(self.config.leverage),
+            leverage=exposure_multiplier,
             margin_mode=str(self.config.margin_mode),
         )
-        self.capital -= (amount * avg_price / self.config.leverage) + fee
+
+        # Lock margin (risk budget) + pay entry fee
+        self.capital -= risk_budget + fee
 
         self.storage.log_trade(
             symbol=symbol,
             side="sell",
             price=avg_price,
-            amount=amount,
+            amount=contract_size,
             mode=settings.TRADING_MODE,
             pnl=0.0,
             bot_type=self.config.bot_type,
         )
 
-        self.log.info(f"[{symbol}] Open SHORT amount={amount:.8f} entry={avg_price:.2f}")
+        self.log.info(f"[{symbol}] Open SHORT amount={contract_size:.8f} entry={avg_price:.2f}")
 
     def _close_position(self, symbol: str, price: float) -> None:
         pos = self.positions.get(symbol)
@@ -350,32 +382,37 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
             return
 
         side = pos.get("side")
-        amount = float(pos["amount"])
+        contract_size = float(pos["amount"])
         entry_price = float(pos["entry_price"])
+        exposure_multiplier = int(pos.get("leverage") or self.config.leverage)
+
+        # Reconstruct the originally locked margin (risk budget) from contract_size.
+        # risk_budget ≈ (contract_size * entry_price) / exposure_multiplier
+        risk_budget = (contract_size * entry_price) / max(1, exposure_multiplier)
 
         if side == "long":
-            order = self._create_order(symbol, "sell", amount, reduce_only=True)
+            order = self._create_order(symbol, "sell", contract_size, reduce_only=True)
         else:
-            order = self._create_order(symbol, "buy", amount, reduce_only=True)
+            order = self._create_order(symbol, "buy", contract_size, reduce_only=True)
 
         exit_price = float(order.get("average") or price)
         fee = float((order.get("fee") or {}).get("cost") or 0.0)
 
-        pnl = (exit_price - entry_price) * amount if side == "long" else (entry_price - exit_price) * amount
-        # Devolver margen + PnL - fee
-        self.capital += (amount * entry_price / self.config.leverage) + pnl - fee
+        pnl = (exit_price - entry_price) * contract_size if side == "long" else (entry_price - exit_price) * contract_size
+        # Refund margin (risk_budget) + PnL - fee
+        self.capital += risk_budget + pnl - fee
 
         self.storage.log_trade(
             symbol=symbol,
             side="sell" if side == "long" else "buy",
             price=exit_price,
-            amount=amount,
+            amount=contract_size,
             mode=settings.TRADING_MODE,
             pnl=pnl,
             bot_type=self.config.bot_type,
         )
 
-        self.log.info(f"[{symbol}] Close {side.upper()}: amount={amount:.8f} entry={entry_price:.2f} exit={exit_price:.2f} pnl≈{pnl:.4f} USDT")
+        self.log.info(f"[{symbol}] Close {side.upper()}: amount={contract_size:.8f} entry={entry_price:.2f} exit={exit_price:.2f} pnl≈{pnl:.4f} USDT")
         self.positions[symbol] = None
 
     def _maybe_close_by_tp_sl(self, symbol: str, price: float, pos: FuturesPosition) -> None:
@@ -387,10 +424,10 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
         else:
             pct = (entry - price) / entry
 
-        if pct >= float(self.config.tp_pct):
+        if pct >= float(self.config.target_favorable_move_pct):
             self.log.info(f"[{symbol}] TP reached ({pct:.3%}), closing position.")
             self._close_position(symbol, price)
-        elif pct <= float(self.config.sl_pct):
+        elif pct <= float(self.config.max_adverse_move_pct):
             self.log.info(f"[{symbol}] SL reached ({pct:.3%}), closing position.")
             self._close_position(symbol, price)
 
