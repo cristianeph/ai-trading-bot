@@ -29,8 +29,24 @@ class Settings:
     DEFAULT_FEE_RESERVE_USDT = 2.0
     DEFAULT_TP_PCT = 0.003
     DEFAULT_SL_PCT = -0.004
-    MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001}
+    MIN_TRADE_AMOUNT = {"BTC/USDT": 0.00001, "ETH/USDT": 0.01}
     DEFAULT_MAX_DRAWDOWN_PCT = 0.10  # 10% stop bot if equity falls by this much
+
+    # Bot Rebalancing Constants
+    REB_REBALANCE_THRESHOLD_PCT = 0.02
+    REB_MAX_TRADE_PCT = 0.25
+    REB_SMART_SCALE_MAX_DELTA_PCT = 0.10
+    REB_SMART_VOL_ENABLED = True
+    REB_SMART_VOL_MEDIUM = 0.02
+    REB_SMART_VOL_HIGH = 0.04
+    REB_CASH_BUFFER_PCT = 0.10
+
+    # Bot Futures Constants
+    FUT_DEFAULT_LEVERAGE = 2
+    FUT_DEFAULT_MARGIN_MODE = "isolated"
+    FUT_DEFAULT_TP_PCT = 0.003
+    FUT_DEFAULT_SL_PCT = -0.004
+    FUT_ALLOW_SHORTS = False
 
     # Feature names to avoid magic strings
     FEATURE_COLUMNS = ["ma_ratio", "rsi_14", "vol_20"]
