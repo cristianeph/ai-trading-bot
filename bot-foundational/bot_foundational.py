@@ -466,6 +466,37 @@ class FoundationalTradingBot(BaseTradingBot):
         entry_price = float(current_pos["entry_price"])
         entry_fee_usdt = float(current_pos.get("entry_fee_usdt", 0.0))
 
+        # Check actual balance on exchange to avoid "insufficient balance" errors
+        # especially during Stop Loss or forced liquidations.
+        try:
+            exchange = get_binance_client()
+            balance = exchange.fetch_balance()
+            base_asset = symbol.split("/")[0]  # e.g., 'BTC' from 'BTC/USDT'
+            actual_balance = float(balance.get(base_asset, {}).get("free", 0.0))
+            
+            if actual_balance < amount:
+                self.log.info(
+                    f"[{symbol}] Adjusting SELL amount: internal={amount:.8f}, "
+                    f"exchange_free={actual_balance:.8f}"
+                )
+                amount = actual_balance
+
+            if amount < self.config.min_trade_amount.get(symbol, 0.0):
+                self.log.error(
+                    f"[{symbol}] Cannot SELL: amount {amount:.8f} is below "
+                    f"minimum trade amount."
+                )
+                # If it's too small to sell, we might as well consider it gone from managed positions
+                # to avoid infinite loops, but here we'll just return and let the bot try again 
+                # or wait for more price movement.
+                # Actually, if it's dust, we should probably clear the position.
+                if amount < (self.config.min_trade_amount.get(symbol, 0.0) / 2):
+                     self.positions[symbol] = None
+                return
+        except Exception as bal_err:
+            self.log.error(f"[{symbol}] Error fetching balance before SELL: {bal_err}")
+            # Continue with internal amount if balance fetch fails
+
         try:
             executed_amount, exit_price, exit_fee_usdt = self._execute_order(
                 symbol, "sell", amount, price
