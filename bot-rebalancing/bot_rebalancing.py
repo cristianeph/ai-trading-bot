@@ -389,28 +389,33 @@ class RebalancingTradingBot(BaseTradingBot):
         amount: float,
         price_hint: float,
         retries: int = 2,
-    ) -> Optional[tuple[float, float, float]]:
+    ) -> Optional[tuple[float, float, float, str, float]]:
         """
-        Execute an order and return (executed_amount, avg_price, fee_usdt).
+        Execute an order and return (filled_base, avg_price, cost_quote, fee_currency, fee_cost).
         Implements a simple retry logic for connectivity or transient errors.
         """
         last_exception = None
         for attempt in range(retries):
             try:
                 order = place_order(symbol, side, amount)
-                if isinstance(order, dict):
-                    executed_amount = float(order.get("amount") or amount)
-                    avg_price = float(order.get("average") or order.get("price") or price_hint)
-                    fee_info = order.get("fee") or {}
-                    fee_currency = fee_info.get("currency")
-                    fee_cost = float(fee_info.get("cost") or 0.0)
-                    fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
-                else:
-                    executed_amount = amount
-                    avg_price = price_hint
-                    fee_usdt = 0.0
 
-                return executed_amount, avg_price, fee_usdt
+                # CCXT orders typically include: filled (base), cost (quote), average, fee{currency,cost}
+                if isinstance(order, dict):
+                    filled_base = float(order.get("filled") or order.get("amount") or amount)
+                    avg_price = float(order.get("average") or order.get("price") or price_hint)
+                    cost_quote = float(order.get("cost") or (filled_base * avg_price))
+
+                    fee_info = order.get("fee") or {}
+                    fee_currency = str(fee_info.get("currency") or "")
+                    fee_cost = float(fee_info.get("cost") or 0.0)
+                else:
+                    filled_base = float(amount)
+                    avg_price = float(price_hint)
+                    cost_quote = float(filled_base * avg_price)
+                    fee_currency = ""
+                    fee_cost = 0.0
+
+                return filled_base, avg_price, cost_quote, fee_currency, fee_cost
 
             except Exception as exc:  # noqa: BLE001
                 last_exception = exc
@@ -422,6 +427,40 @@ class RebalancingTradingBot(BaseTradingBot):
 
         self.log.error(f"[{symbol}] All {retries} attempts failed to place {side.upper()} order. Final error: {last_exception}")
         return None
+
+    @staticmethod
+    def _base_asset(symbol: str) -> str:
+        # "BTC/USDT" -> "BTC"
+        return symbol.split("/")[0].strip()
+
+    def _get_free_balance_base(self, symbol: str) -> float:
+        """Return free balance for the base asset of a symbol (LIVE only safe-guard)."""
+        try:
+            exchange = get_binance_client()
+            bal = exchange.fetch_balance()
+            asset = self._base_asset(symbol)
+            # CCXT balance shape can be either bal[asset]["free"] or bal["free"][asset]
+            if asset in bal and isinstance(bal[asset], dict) and "free" in bal[asset]:
+                return float(bal[asset].get("free") or 0.0)
+            free_map = bal.get("free") or {}
+            return float(free_map.get(asset) or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            self.log.error(f"[{symbol}] Failed to fetch free balance for base asset: {exc}")
+            return 0.0
+
+    def _get_min_notional(self, symbol: str) -> float:
+        """Best-effort min notional (quote) from exchange market metadata."""
+        try:
+            exchange = get_binance_client()
+            # Ensure markets are loaded
+            if not getattr(exchange, "markets", None):
+                exchange.load_markets()
+            m = exchange.market(symbol)
+            limits = (m or {}).get("limits") or {}
+            cost = limits.get("cost") or {}
+            return float(cost.get("min") or 0.0)
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _gate_trade_by_model(
@@ -518,6 +557,14 @@ class RebalancingTradingBot(BaseTradingBot):
 
         min_amount = self.config.min_trade_amount.get(symbol, 0.0)
         amount = trade_value / price
+        # Avoid Binance NOTIONAL filter failures (min quote value per order)
+        min_notional = self._get_min_notional(symbol)
+        notional = amount * price
+        if min_notional > 0 and notional < min_notional:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: notional {notional:.2f} < min_notional {min_notional:.2f}"
+            )
+            return
         if amount < min_amount:
             self.log.info(
                 f"[{symbol}] Skipping BUY: amount {amount:.8f} < "
@@ -539,9 +586,16 @@ class RebalancingTradingBot(BaseTradingBot):
         result = self._execute_exchange_order(symbol, "buy", amount, price)
         if result is None:
             return
-        executed_amount, avg_price, fee_usdt = result
+        filled_base, avg_price, cost_quote, fee_currency, fee_cost = result
 
-        total_cost = executed_amount * avg_price + fee_usdt
+        # If fee is charged in base (e.g. BTC/ETH), net received base is reduced.
+        base_asset = self._base_asset(symbol)
+        net_base = filled_base
+        if fee_currency == base_asset and fee_cost > 0:
+            net_base = max(0.0, filled_base - fee_cost)
+
+        fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
+        total_cost = cost_quote + fee_usdt
         self.capital -= total_cost
 
         current_pos = self.positions.get(symbol)
@@ -550,13 +604,13 @@ class RebalancingTradingBot(BaseTradingBot):
         prev_price = float(current_pos.get("entry_price", avg_price)) if current_pos else avg_price
         prev_fee = float(current_pos.get("entry_fee_usdt", 0.0) if current_pos else 0.0)
 
-        new_amount = prev_amount + executed_amount
+        new_amount = prev_amount + net_base
         if new_amount <= 0:
             self.positions[symbol] = None
             self.position_repo.remove_symbol(symbol)
         else:
             new_entry_price = (
-                prev_amount * prev_price + executed_amount * avg_price
+                prev_amount * prev_price + net_base * avg_price
             ) / new_amount
             new_fee = prev_fee + fee_usdt
 
@@ -584,13 +638,13 @@ class RebalancingTradingBot(BaseTradingBot):
             symbol=symbol,
             side="buy",
             price=avg_price,
-            amount=executed_amount,
+            amount=net_base,
             mode=settings.TRADING_MODE,
             pnl=0.0,
         )
 
         self.log.info(
-            f"[{symbol}] Rebalance BUY: amount={executed_amount:.6f}, "
+            f"[{symbol}] Rebalance BUY: amount={net_base:.6f}, "
             f"avg_price={avg_price:.2f}, cost={total_cost:.2f}, "
             f"capital={self.capital:.2f}"
         )
@@ -617,6 +671,18 @@ class RebalancingTradingBot(BaseTradingBot):
             self.log.info(f"[{symbol}] Skipping SELL: position amount <= 0.")
             return
 
+        # In LIVE mode, the DB-tracked position can drift from the real wallet due to fees,
+        # manual trades, or rounding/step-size. Always cap SELL to the exchange free balance.
+        free_on_exchange = self._get_free_balance_base(symbol)
+        if free_on_exchange > 0:
+            safety_free = max(0.0, free_on_exchange * 0.999)
+            if safety_free < amount_available:
+                self.log.warning(
+                    f"[{symbol}] Tracked amount ({amount_available:.8f}) > exchange free ({free_on_exchange:.8f}). "
+                    f"Capping sells to {safety_free:.8f} to avoid insufficient-balance errors."
+                )
+                amount_available = safety_free
+
         amount = trade_value / price
         amount = min(amount, amount_available)
 
@@ -631,9 +697,10 @@ class RebalancingTradingBot(BaseTradingBot):
         result = self._execute_exchange_order(symbol, "sell", amount, price)
         if result is None:
             return
-        executed_amount, exit_price, exit_fee_usdt = result
+        executed_amount, exit_price, cost_quote, fee_currency, fee_cost = result
 
-        proceeds = executed_amount * exit_price - exit_fee_usdt
+        exit_fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
+        proceeds = cost_quote - exit_fee_usdt
         self.capital += proceeds
 
         prev_amount = float(current_pos.get("amount", 0.0))
@@ -821,6 +888,13 @@ class RebalancingTradingBot(BaseTradingBot):
         if amount <= 0:
             return
 
+        free_on_exchange = self._get_free_balance_base(symbol)
+        if free_on_exchange > 0:
+            amount = min(amount, max(0.0, free_on_exchange * 0.999))
+        if amount <= 0:
+            self.log.warning(f"[{symbol}] [LIQUIDATION] Skipping: no free balance available on exchange.")
+            return
+
         self.log.info(f"[{symbol}] [LIQUIDATION] Selling all managed amount: {amount:.6f} at price≈{price:.2f}")
 
         # Execute full sell
@@ -828,8 +902,9 @@ class RebalancingTradingBot(BaseTradingBot):
         if result is None:
             return
 
-        executed_amount, exit_price, exit_fee_usdt = result
-        proceeds = executed_amount * exit_price - exit_fee_usdt
+        executed_amount, exit_price, cost_quote, fee_currency, fee_cost = result
+        exit_fee_usdt = fee_cost if fee_currency == "USDT" else 0.0
+        proceeds = cost_quote - exit_fee_usdt
         self.capital += proceeds
 
         # PnL logic
