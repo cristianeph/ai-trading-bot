@@ -17,16 +17,16 @@ services:
     ports:
       - "8002:8002"
 
-  bot_foundational:
-    build:
-      context: .
-      dockerfile: bot-foundational/bot-foundational.Dockerfile
-    container_name: crypto-bot-foundational
-    restart: unless-stopped
-    depends_on:
-      - model_btc
-    env_file:
-      - .env.foundational
+#  bot_foundational:
+#    build:
+#      context: .
+#      dockerfile: bot-foundational/bot-foundational.Dockerfile
+#    container_name: crypto-bot-foundational
+#    restart: unless-stopped
+#    depends_on:
+#      - model_btc
+#    env_file:
+#      - .env.foundational
 
   bot_rebalancing:
     build:
