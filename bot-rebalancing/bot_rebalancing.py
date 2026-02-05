@@ -1049,8 +1049,7 @@ def run_bot_loop() -> None:
     usdt_balance = check_if_balance()
     bot = RebalancingTradingBot(
         balance=usdt_balance,
-        sleep_seconds=300,  # initial hint, overridden by BotConfig if present
-        min_confidence=0.51,
+        sleep_seconds=420,  # initial hint, overridden by BotConfig if present
     )
     bot.run()
 
