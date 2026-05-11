@@ -59,6 +59,7 @@ class RebalancingConfig:
     min_trade_amount: Dict[str, float]
     symbols: list[str]
     max_drawdown_pct: float
+    bot_enabled: bool = True
 
     # REL-005: Dynamic Thresholds
     dynamic_threshold_enabled: bool = False
@@ -104,6 +105,12 @@ class RebalancingConfig:
         """
 
         # Global trading gate
+        raw_bot_enabled = storage.get_bot_config_value(
+            "bot_enabled",
+            default="true",
+        )
+        bot_enabled = str(raw_bot_enabled).lower() in ("1", "true", "yes", "y")
+
         min_confidence = storage.get_bot_config_float(
             "min_confidence",
             default=default_min_confidence,
@@ -238,6 +245,7 @@ class RebalancingConfig:
             max_drawdown_pct=max_drawdown_pct,
             dynamic_threshold_enabled=dynamic_threshold_enabled,
             vol_volatility_multiplier=vol_volatility_multiplier,
+            bot_enabled=bot_enabled,
         )
         config.validate()
         return config
@@ -373,9 +381,19 @@ class RebalancingTradingBot(BaseTradingBot):
     def _before_symbols_loop(self) -> None:
         """
         Hook executed before processing symbols in the main loop.
-        Syncs positions from the database.
+        Syncs positions and reloads configuration from the database.
         """
+        self.config = self.load_config()
         self._sync_positions_from_db()
+
+    def _process_symbol(self, symbol: str) -> None:
+        """
+        Check if the bot is enabled before processing a symbol.
+        """
+        if not self.config.bot_enabled:
+            self.log.info(f"[REBALANCING] Bot is disabled via config (bot_enabled=False). Skipping {symbol}.")
+            return
+        super()._process_symbol(symbol)
 
     def _sync_positions_from_db(self) -> None:
         """

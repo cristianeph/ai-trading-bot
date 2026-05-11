@@ -389,6 +389,10 @@ class BaseTradingBot(ABC):
 
         return False
 
+    def _before_symbols_loop(self) -> None:
+        """Hook opcional que se ejecuta antes del bucle de símbolos."""
+        pass
+
     def _process_symbol(self, symbol: str) -> None:
         """
         Hook de alto nivel:
@@ -461,6 +465,8 @@ class BaseTradingBot(ABC):
             while True:
                 # REL-003: Check circuit breakers at start of loop
                 self._check_max_drawdown()
+
+                self._before_symbols_loop()
 
                 for symbol in self.symbols:
                     try:

@@ -108,6 +108,7 @@ Focuses on technical debt, risk mitigation, and data integrity to ensure the bot
 | **7. Low** | **Smart Cash Buffer** | COMPLETED | Rebalancing | None | No | Advanced cash management for fees and pending orders. |
 | **8. Low** | **Target Weight Scheduling** | COMPLETED | Rebalancing | None | **Yes** | Support for time-based or trend-following weight shifts. |
 | **9. Low** | **Dry Run Improvements** | COMPLETED | Common/Rebal | None | No | Realistic slippage and fee simulation for paper trading. |
+| **10. Low** | **Global Kill Switch** | COMPLETED | Common/Rebalancing | None | **Yes** | `bot_enabled` flag to turn trading activity ON/OFF via database. |
 
 ### Phase 2: Monitoring, API & UI
 Focuses on user experience, real-time monitoring, and external integrations (deferred to a separate project/stage).

@@ -19,6 +19,7 @@ This document tracks the release items for the crypto bot project enhancements, 
 | REL-007 | **Low** | Smart Cash Buffer | COMPLETED | Bot Rebalancing |
 | REL-008 | **Low** | Target Weight Scheduling | COMPLETED | Bot Rebalancing |
 | REL-009 | **Low** | Dry Run Improvements | COMPLETED | Common/Rebal |
+| REL-012 | **Low** | Global Kill Switch | COMPLETED | Common/Rebalancing |
 
 ### Phase 2: Monitoring, API & UI
 
@@ -118,6 +119,18 @@ This document tracks the release items for the crypto bot project enhancements, 
     - Add `simulate_slippage` and `simulate_fees` parameters to paper trading logic.
     - Fetch current Order Book depth to estimate slippage for large orders in paper mode.
 
+### REL-012: Global Kill Switch
+**Objective:** Allow manual control of trading activity via database configuration.
+
+- **Base Bot Changes (Common Layer):**
+    - Introduced `_before_symbols_loop()` lifecycle hook in `BaseTradingBot` to support dynamic configuration reloading.
+- **Bot Rebalancing Changes:**
+    - Load `bot_enabled` flag from `botconfig` table.
+    - Implement `_before_symbols_loop()` to reload config and check `bot_enabled`.
+    - Skip `_process_symbol()` execution if `bot_enabled` is False.
+- **Migration:**
+    - Add `bot_enabled` parameter to `botconfig` table.
+
 ---
 
 ### Phase 2: Monitoring, API & UI
@@ -152,6 +165,7 @@ This document tracks the release items for the crypto bot project enhancements, 
 | `enhanced_trade_tracking` | `trade` | Add `invested_usdt_equivalent`, `usdt_rate`, `fee_usdt`, `reference_id`. |
 | `target_weight_scheduling` | `bot_config` / New Table | Add `target_weight_schedule` table or JSON in `bot_config`. |
 | `drift_reporting` | `drift_log` (New) | New table for tracking portfolio drift over time. |
+| `bot_enabled_flag` | `botconfig` | Add `bot_enabled` parameter to the configuration table. |
 
 ---
 
