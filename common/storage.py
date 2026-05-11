@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 
 # Default path used for SQLite fallback (when no MySQL env vars are provided)
@@ -100,6 +100,15 @@ class DriftLog(SQLModel, table=True):
     mode: str = Field(index=True)
     bot_type: str = Field(default=None, index=True)
     details: Optional[str] = None  # JSON string with per-symbol drift
+
+
+class TargetWeightSchedule(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bot_type: str = Field(index=True)
+    symbol: str
+    target_weight: float
+    start_timestamp: str = Field(index=True)  # ISO format
+    end_timestamp: Optional[str] = Field(default=None, index=True)  # ISO format
 
 
 class Storage:
@@ -568,6 +577,27 @@ class Storage:
             else:
                 row.value = value
             session.commit()
+
+    def get_active_weight_schedules(self, bot_type: Optional[str] = None) -> List[TargetWeightSchedule]:
+        """
+        Returns all weight schedules for this bot_type that are currently active
+        based on the current timestamp.
+        """
+        effective_bot_type = bot_type or self.bot_type
+        now = datetime.utcnow().isoformat()
+        with self._get_session() as session:
+            stmt = (
+                select(TargetWeightSchedule)
+                .where(TargetWeightSchedule.bot_type == effective_bot_type)
+                .where(TargetWeightSchedule.start_timestamp <= now)
+                .where(
+                    or_(
+                        TargetWeightSchedule.end_timestamp == None,
+                        TargetWeightSchedule.end_timestamp >= now,
+                    )
+                )
+            )
+            return session.exec(stmt).all()
 
     # -------------------------------------------------------------------------
     # Lifecycle
