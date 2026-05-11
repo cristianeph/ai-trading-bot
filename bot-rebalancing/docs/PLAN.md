@@ -13,12 +13,12 @@ This document tracks the release items for the crypto bot project enhancements, 
 | REL-001 | **Critical** | Enhanced Trade Tracking | COMPLETED | Common (Storage/Base) |
 | REL-003 | **High** | Centralized Circuit Breakers | COMPLETED | Common (Base Bot) |
 | REL-002 | **High** | Robust Execution Layer | COMPLETED | Common (Data Client) |
-| REL-004 | **Medium** | Performance Service | Pending | Common (New Service) |
-| REL-005 | **Medium** | Dynamic Rebalancing Thresholds | Pending | Bot Rebalancing |
-| REL-011 | **Medium** | Drift Reporting | Pending | Bot Rebalancing |
-| REL-007 | **Low** | Smart Cash Buffer | Pending | Bot Rebalancing |
-| REL-008 | **Low** | Target Weight Scheduling | Pending | Bot Rebalancing |
-| REL-009 | **Low** | Dry Run Improvements | Pending | Common/Rebal |
+| REL-004 | **Medium** | Performance Service | COMPLETED | Common (New Service) |
+| REL-005 | **Medium** | Dynamic Rebalancing Thresholds | COMPLETED | Bot Rebalancing |
+| REL-011 | **Medium** | Drift Reporting | COMPLETED | Bot Rebalancing |
+| REL-007 | **Low** | Smart Cash Buffer | COMPLETED | Bot Rebalancing |
+| REL-008 | **Low** | Target Weight Scheduling | COMPLETED | Bot Rebalancing |
+| REL-009 | **Low** | Dry Run Improvements | COMPLETED | Common/Rebal |
 
 ### Phase 2: Monitoring, API & UI
 

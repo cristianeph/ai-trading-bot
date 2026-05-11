@@ -102,12 +102,12 @@ Focuses on technical debt, risk mitigation, and data integrity to ensure the bot
 | **1. Critical** | **Enhanced Trade Tracking** | COMPLETED | Common | None | **Yes** | Add `invested_usdt_equivalent`, `usdt_rate`, `fee_usdt`, and `reference_id` to `Trade` table. Essential for UI and PnL accuracy. |
 | **2. High** | **Circuit Breakers** | COMPLETED | Common | None | No | Centralize Max Drawdown logic in `BaseTradingBot` to protect against catastrophic losses across all bots. |
 | **3. High** | **Robust Execution Layer** | COMPLETED | Common | None | No | Support for Limit Orders and standardized error handling to reduce slippage and improve reliability. |
-| **4. Medium** | **Performance Service** | Pending | Common | Trade Tracking | No | New service to calculate complex PnL (weighted averages) using the enhanced trade data. |
-| **5. Medium** | **Dynamic Thresholds** | Pending | Rebalancing | None | No | Volatility-based rebalancing thresholds to reduce fee churn in volatile markets. |
-| **6. Medium** | **Drift Reporting** | Pending | Rebalancing | None | No | Logging portfolio drift even when below threshold. Crucial for data visibility. |
-| **7. Low** | **Smart Cash Buffer** | Pending | Rebalancing | None | No | Advanced cash management for fees and pending orders. |
-| **8. Low** | **Target Weight Scheduling** | Pending | Rebalancing | None | **Yes** | Support for time-based or trend-following weight shifts. |
-| **9. Low** | **Dry Run Improvements** | Pending | Common/Rebal | None | No | Realistic slippage and fee simulation for paper trading. |
+| **4. Medium** | **Performance Service** | COMPLETED | Common | Trade Tracking | No | New service to calculate complex PnL (weighted averages) using the enhanced trade data. |
+| **5. Medium** | **Dynamic Thresholds** | COMPLETED | Rebalancing | None | No | Volatility-based rebalancing thresholds to reduce fee churn in volatile markets. |
+| **6. Medium** | **Drift Reporting** | COMPLETED | Rebalancing | None | No | Logging portfolio drift even when below threshold. Crucial for data visibility. |
+| **7. Low** | **Smart Cash Buffer** | COMPLETED | Rebalancing | None | No | Advanced cash management for fees and pending orders. |
+| **8. Low** | **Target Weight Scheduling** | COMPLETED | Rebalancing | None | **Yes** | Support for time-based or trend-following weight shifts. |
+| **9. Low** | **Dry Run Improvements** | COMPLETED | Common/Rebal | None | No | Realistic slippage and fee simulation for paper trading. |
 
 ### Phase 2: Monitoring, API & UI
 Focuses on user experience, real-time monitoring, and external integrations (deferred to a separate project/stage).
