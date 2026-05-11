@@ -634,13 +634,13 @@ class RebalancingTradingBot(BaseTradingBot):
                 entry_fee_usdt=new_fee,
             )
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="buy",
             price=avg_price,
             amount=net_base,
-            mode=settings.TRADING_MODE,
             pnl=0.0,
+            fee_usdt=fee_usdt,
         )
 
         self.log.info(
@@ -737,13 +737,13 @@ class RebalancingTradingBot(BaseTradingBot):
                 entry_fee_usdt=remaining_fee,
             )
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell",
             price=exit_price,
             amount=executed_amount,
-            mode=settings.TRADING_MODE,
             pnl=pnl_realized,
+            fee_usdt=exit_fee_usdt,
         )
 
         self.log.info(
@@ -924,13 +924,13 @@ class RebalancingTradingBot(BaseTradingBot):
         self.position_repo.remove_symbol(symbol)
         self.positions[symbol] = None
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell",
             price=exit_price,
             amount=executed_amount,
-            mode=settings.TRADING_MODE,
             pnl=pnl_realized,
+            fee_usdt=exit_fee_usdt,
         )
 
         self.log.info(
@@ -938,32 +938,6 @@ class RebalancingTradingBot(BaseTradingBot):
             f"capital={self.capital:.2f}"
         )
 
-    def _check_max_drawdown(self) -> None:
-        """
-        Check if the maximum drawdown threshold has been reached and trigger the circuit breaker.
-        """
-        equity = compute_equity(self.capital, self.positions)
-        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
-
-        if drawdown_pct >= self.config.max_drawdown_pct:
-            self.log.error(
-                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
-                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
-                f"Stopping bot."
-            )
-            # Liquidate all positions
-            for symbol in list(self.symbols):
-                pos = self.positions.get(symbol)
-                if pos:
-                    # We might not have the latest price here easily without fetching,
-                    # but _liquidate_position_to_base is usually called from process_symbol
-                    # or liquidate_all_positions_to_base which fetches it.
-                    # For safety, we use the last_price in the position if available.
-                    price = pos.get("last_price", pos.get("entry_price", 0.0))
-                    if price > 0:
-                        self._liquidate_position_to_base(symbol, price)
-
-            raise SystemExit("Max Drawdown circuit breaker triggered.")
 
     def _process_symbol_decision(
         self,
@@ -977,8 +951,6 @@ class RebalancingTradingBot(BaseTradingBot):
         """
         Process the trading decision for a single symbol.
         """
-        self._check_max_drawdown()
-
         if self._should_skip_decision_same_candle(symbol, candle_ts, price):
             return
 
