@@ -1,3 +1,4 @@
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -57,6 +58,10 @@ class RebalancingConfig:
     min_trade_amount: Dict[str, float]
     symbols: list[str]
     max_drawdown_pct: float
+
+    # REL-005: Dynamic Thresholds
+    dynamic_threshold_enabled: bool = False
+    vol_volatility_multiplier: float = 1.0
 
     def validate(self) -> None:
         """
@@ -163,6 +168,17 @@ class RebalancingConfig:
             default=settings.DEFAULT_MAX_DRAWDOWN_PCT,
         )
 
+        # Dynamic Thresholds
+        raw_dynamic_threshold_enabled = storage.get_bot_config_value(
+            "dynamic_threshold_enabled",
+            default="false",
+        )
+        dynamic_threshold_enabled = str(raw_dynamic_threshold_enabled).lower() in ("1", "true", "yes", "y")
+        vol_volatility_multiplier = storage.get_bot_config_float(
+            "vol_volatility_multiplier",
+            default=1.0,
+        )
+
         # Per-symbol target weights and min amounts
         target_weights: Dict[str, float] = {}
         min_trade_amount: Dict[str, float] = {}
@@ -203,6 +219,8 @@ class RebalancingConfig:
             min_trade_amount=min_trade_amount,
             symbols=symbols,
             max_drawdown_pct=max_drawdown_pct,
+            dynamic_threshold_enabled=dynamic_threshold_enabled,
+            vol_volatility_multiplier=vol_volatility_multiplier,
         )
         config.validate()
         return config
@@ -756,6 +774,46 @@ class RebalancingTradingBot(BaseTradingBot):
     # Strategy hook implementation                                       #
     # ------------------------------------------------------------------ #
 
+    def _log_equity(self) -> None:
+        """
+        Extended _log_equity to include portfolio drift reporting (REL-011).
+        """
+        total_equity = compute_equity(self.capital, self.positions)
+        self.storage.log_equity(total_equity)
+
+        # Calculate Portfolio Drift
+        # Sum of absolute differences between actual and target weights
+        effective_equity = total_equity * max(0.0, 1.0 - self.config.cash_buffer_pct)
+        if effective_equity <= 0:
+            return
+
+        total_drift = 0.0
+        drift_details = {}
+        
+        for symbol in self.config.symbols:
+            pos = self.positions.get(symbol)
+            if pos:
+                current_value = pos["amount"] * pos["price"]
+            else:
+                current_value = 0.0
+            
+            current_pct = current_value / effective_equity
+            target_pct = self.config.target_weights.get(symbol, 0.0)
+            drift = current_pct - target_pct
+            total_drift += abs(drift)
+            drift_details[symbol] = {
+                "current_pct": round(current_pct, 4),
+                "target_pct": round(target_pct, 4),
+                "drift": round(drift, 4)
+            }
+
+        self.storage.log_drift(
+            total_drift=total_drift,
+            details=json.dumps(drift_details),
+            mode=settings.TRADING_MODE
+        )
+        self.log.info(f"[DRIFT REPORT] Total Portfolio Drift: {total_drift:.2%}")
+
     def _apply_rebalancing_logic(
         self,
         symbol: str,
@@ -790,11 +848,22 @@ class RebalancingTradingBot(BaseTradingBot):
             delta_pct,
         ) = self._compute_current_allocation(symbol, price, effective_equity)
 
-        if abs(delta_pct) < self.config.rebalance_threshold_pct:
+        # REL-005: Dynamic Rebalancing Thresholds
+        effective_threshold = self.config.rebalance_threshold_pct
+        if self.config.dynamic_threshold_enabled:
+            vol_20 = latest_row.get("vol_20", 0.0)
+            # Example logic: threshold increases with volatility to reduce churn
+            # base_threshold * (1 + vol_20 * multiplier)
+            # If vol_20 is 0.02 (2%), and multiplier is 10, threshold increases by 20%
+            vol_factor = 1.0 + (vol_20 * self.config.vol_volatility_multiplier)
+            effective_threshold = self.config.rebalance_threshold_pct * vol_factor
+            self.log.info(f"[{symbol}] Dynamic threshold: base={self.config.rebalance_threshold_pct:.2%}, vol_20={vol_20:.4f}, factor={vol_factor:.2f}, effective={effective_threshold:.2%}")
+
+        if abs(delta_pct) < effective_threshold:
             self.log.info(
                 f"[{symbol}] Allocation within threshold: "
                 f"current={current_pct:.2%}, target={target_pct:.2%}, "
-                f"delta={delta_pct:.2%}, threshold={self.config.rebalance_threshold_pct:.2%}"
+                f"delta={delta_pct:.2%}, threshold={effective_threshold:.2%}"
             )
             return
 
