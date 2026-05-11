@@ -48,6 +48,7 @@ class RebalancingConfig:
     hold_sample_every_min: int
 
     cash_buffer_pct: float
+    cash_buffer_min_usdt: float
 
     smart_scale_max_delta_pct: float
     smart_vol_enabled: bool
@@ -84,6 +85,8 @@ class RebalancingConfig:
             raise ValueError(f"hold_sample_every_min must be positive, got {self.hold_sample_every_min}")
         if not (0 <= self.cash_buffer_pct <= 1):
             raise ValueError(f"cash_buffer_pct must be between 0 and 1, got {self.cash_buffer_pct}")
+        if self.cash_buffer_min_usdt < 0:
+            raise ValueError(f"cash_buffer_min_usdt must be non-negative, got {self.cash_buffer_min_usdt}")
         if self.max_drawdown_pct <= 0 or self.max_drawdown_pct >= 1:
             raise ValueError(f"max_drawdown_pct must be between 0 and 1, got {self.max_drawdown_pct}")
 
@@ -139,6 +142,10 @@ class RebalancingConfig:
             "cash_buffer_pct",
             default=settings.REB_CASH_BUFFER_PCT,
         )
+        cash_buffer_min_usdt = storage.get_bot_config_float(
+            "cash_buffer_min_usdt",
+            default=5.0,  # Default 5 USDT for fees
+        )
 
         # Smart scaling by deviation
         smart_scale_max_delta_pct = storage.get_bot_config_float(
@@ -183,17 +190,26 @@ class RebalancingConfig:
         target_weights: Dict[str, float] = {}
         min_trade_amount: Dict[str, float] = {}
 
+        # REL-008: Target Weight Scheduling
+        active_schedules = storage.get_active_weight_schedules()
+        scheduled_symbols = {s.symbol for s in active_schedules}
+
         num_symbols = len(symbols)
         default_equal_weight = 1.0 / num_symbols if num_symbols > 0 else 0.0
 
         for symbol in symbols:
-            target_weights[symbol] = storage.get_bot_config_float(
-                f"target_weight.{symbol}",
-                default=default_equal_weight,
-            )
+            # Override from schedule if available
+            schedule = next((s for s in active_schedules if s.symbol == symbol), None)
+            if schedule:
+                target_weights[symbol] = schedule.target_weight
+            else:
+                target_weights[symbol] = storage.get_bot_config_float(
+                    f"target_weight.{symbol}",
+                    default=default_equal_weight,
+                )
             min_trade_amount[symbol] = storage.get_bot_config_float(
-                f"min_trade_amount.{symbol}",
-                default=settings.MIN_TRADE_AMOUNT.get(symbol, 0.00001),
+                    f"min_trade_amount.{symbol}",
+                    default=settings.MIN_TRADE_AMOUNT.get(symbol, 0.00001),
             )
 
         # Normalize weights (sum=1)
@@ -211,6 +227,7 @@ class RebalancingConfig:
             hold_conf_margin=hold_conf_margin,
             hold_sample_every_min=hold_sample_every_min,
             cash_buffer_pct=cash_buffer_pct,
+            cash_buffer_min_usdt=cash_buffer_min_usdt,
             smart_scale_max_delta_pct=smart_scale_max_delta_pct,
             smart_vol_enabled=smart_vol_enabled,
             smart_vol_medium=smart_vol_medium,
@@ -411,7 +428,26 @@ class RebalancingTradingBot(BaseTradingBot):
         """
         Execute an order and return (filled_base, avg_price, cost_quote, fee_currency, fee_cost).
         Implements a simple retry logic for connectivity or transient errors.
+        In paper mode, simulates slippage and fees.
         """
+        if settings.TRADING_MODE == "paper":
+            # Simulate slippage
+            slippage_factor = settings.PAPER_TRADING_SLIPPAGE_PCT
+            if side == "buy":
+                avg_price = price_hint * (1 + slippage_factor)
+            else:
+                avg_price = price_hint * (1 - slippage_factor)
+
+            filled_base = float(amount)
+            cost_quote = filled_base * avg_price
+
+            # Simulate fees
+            fee_rate = settings.PAPER_TRADING_FEE_PCT
+            fee_cost = cost_quote * fee_rate
+            fee_currency = "USDT"
+
+            return filled_base, avg_price, cost_quote, fee_currency, fee_cost
+
         last_exception = None
         for attempt in range(retries):
             try:
@@ -552,7 +588,10 @@ class RebalancingTradingBot(BaseTradingBot):
 
         # Cash buffer
         total_equity = compute_equity(self.capital, self.positions)
-        buffer_amount = max(total_equity * self.config.cash_buffer_pct, 0.0)
+        buffer_amount = max(
+            total_equity * self.config.cash_buffer_pct,
+            self.config.cash_buffer_min_usdt
+        )
         max_spend = max(0.0, self.capital - buffer_amount)
 
         if max_spend <= 0:
@@ -832,12 +871,16 @@ class RebalancingTradingBot(BaseTradingBot):
             )
             return
 
-        effective_equity = total_equity * max(0.0, 1.0 - self.config.cash_buffer_pct)
+        effective_equity = total_equity - max(
+            total_equity * self.config.cash_buffer_pct,
+            self.config.cash_buffer_min_usdt
+        )
         if effective_equity <= 0:
             self.log.info(
                 f"[{symbol}] Skipping rebalance: non-positive effective_equity "
                 f"after cash buffer (equity={total_equity:.2f}, "
-                f"buffer_pct={self.config.cash_buffer_pct:.2%})."
+                f"buffer_pct={self.config.cash_buffer_pct:.2%}, "
+                f"min_buffer={self.config.cash_buffer_min_usdt:.2f} USDT)."
             )
             return
 

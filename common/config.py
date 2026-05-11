@@ -40,6 +40,8 @@ class Settings:
     REB_SMART_VOL_MEDIUM = 0.02
     REB_SMART_VOL_HIGH = 0.04
     REB_CASH_BUFFER_PCT = 0.10
+    PAPER_TRADING_SLIPPAGE_PCT = 0.0005  # 0.05% slippage
+    PAPER_TRADING_FEE_PCT = 0.001       # 0.1% fee
 
     # Bot Futures Constants
     FUT_DEFAULT_LEVERAGE = 2
