@@ -117,26 +117,6 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
             default_sleep_seconds=default_sleep_seconds,
         )
 
-    def _check_max_drawdown(self) -> None:
-        # TODO: Mejorar estimación de equity con PnL no realizado
-        equity = self.capital
-        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
-
-        if drawdown_pct >= self.config.max_drawdown_pct:
-            self.log.error(
-                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
-                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
-                f"Stopping bot."
-            )
-            for symbol in self.symbols:
-                if self.positions.get(symbol):
-                    # Fetch current price for liquidation
-                    state = self._fetch_latest_market_state(symbol)
-                    if state:
-                        _, price, _ = state
-                        self._close_position(symbol, price)
-
-            raise SystemExit("Max Drawdown circuit breaker triggered.")
 
     def _should_skip_decision_same_candle(self, symbol: str, latest_row: pd.Series, price: float) -> bool:
         candle_ts = latest_row.name  # Assuming index is timestamp or there's a timestamp
@@ -175,8 +155,6 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
         return action, conf
 
     def _process_symbol_decision(self, symbol: str, latest_row: pd.Series, price: float, features: pd.DataFrame) -> None:
-        self._check_max_drawdown()
-
         if self._should_skip_decision_same_candle(symbol, latest_row, price):
             return
 
@@ -319,14 +297,12 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
         # accounting for "free capital" available for the next trades.
         self.capital -= risk_budget + fee
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="buy",
             price=avg_price,
             amount=contract_size,
-            mode=settings.TRADING_MODE,
             pnl=0.0,
-            bot_type=self.config.bot_type,
         )
 
         self.log.info(f"[{symbol}] Open LONG amount={contract_size:.8f} entry={avg_price:.2f}")
@@ -364,14 +340,12 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
         # Lock margin (risk budget) + pay entry fee
         self.capital -= risk_budget + fee
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell",
             price=avg_price,
             amount=contract_size,
-            mode=settings.TRADING_MODE,
             pnl=0.0,
-            bot_type=self.config.bot_type,
         )
 
         self.log.info(f"[{symbol}] Open SHORT amount={contract_size:.8f} entry={avg_price:.2f}")
@@ -402,14 +376,12 @@ class FoundationalFuturesBot(FuturesTradingBotBase):
         # Refund margin (risk_budget) + PnL - fee
         self.capital += risk_budget + pnl - fee
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell" if side == "long" else "buy",
             price=exit_price,
             amount=contract_size,
-            mode=settings.TRADING_MODE,
             pnl=pnl,
-            bot_type=self.config.bot_type,
         )
 
         self.log.info(f"[{symbol}] Close {side.upper()}: amount={contract_size:.8f} entry={entry_price:.2f} exit={exit_price:.2f} pnl≈{pnl:.4f} USDT")

@@ -155,6 +155,31 @@ class BaseTradingBot(ABC):
         if current_pos is not None:
             current_pos["last_price"] = price
 
+    def _check_max_drawdown(self) -> None:
+        """
+        Implement a maximum drawdown circuit breaker to stop the bot if losses
+        exceed a certain threshold.
+        """
+        # Fetch threshold from config, default to something safe if not set
+        max_drawdown_pct = self.storage.get_bot_config_float("max_drawdown_pct", 0.1)
+
+        equity = compute_equity(self.capital, self.positions)
+        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
+
+        if drawdown_pct >= max_drawdown_pct:
+            self.log.error(
+                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
+                f"Threshold: {max_drawdown_pct:.2%}. "
+                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
+                f"Stopping bot."
+            )
+            # Liquidate all positions and exit
+            try:
+                self.liquidate_all_positions_to_base()
+            except Exception as e:
+                self.log.error(f"Failed to liquidate all positions during emergency stop: {e}")
+            raise SystemExit(f"Max Drawdown circuit breaker triggered: {drawdown_pct:.2%}")
+
     def _compute_unrealized_pnl(
         self,
         amount: float,
@@ -193,6 +218,40 @@ class BaseTradingBot(ABC):
         revenue_usdt = amount * exit_price - exit_fee_usdt
         pnl = revenue_usdt - invested_usdt
         return pnl, revenue_usdt
+
+    def _log_trade(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        amount: float,
+        pnl: Optional[float] = None,
+        reference_id: Optional[str] = None,
+        fee_usdt: float = 0.0,
+    ) -> None:
+        """
+        Helper to log trades with rich metadata.
+        Calculates usdt_rate automatically.
+        """
+        # For simplicity, if we are trading BTC/USDT, the price IS the usdt_rate.
+        # For more complex pairs (e.g. BTC/ETH), we'd need to fetch ETH/USDT price.
+        # Here we assume the base currency of symbols is USDT.
+        usdt_rate = price
+        invested_usdt_equivalent = amount * price
+
+        self.storage.log_trade(
+            symbol=symbol,
+            side=side,
+            price=price,
+            amount=amount,
+            mode=settings.TRADING_MODE,
+            pnl=pnl,
+            bot_type=self.bot_type,
+            invested_usdt_equivalent=invested_usdt_equivalent,
+            usdt_rate=usdt_rate,
+            fee_usdt=fee_usdt,
+            reference_id=reference_id,
+        )
 
     def _log_equity(self) -> None:
         equity = compute_equity(self.capital, self.positions)
@@ -400,6 +459,9 @@ class BaseTradingBot(ABC):
         self.log.info("[BOT] Starting trading loop...")
         try:
             while True:
+                # REL-003: Check circuit breakers at start of loop
+                self._check_max_drawdown()
+
                 for symbol in self.symbols:
                     try:
                         self._process_symbol(symbol)

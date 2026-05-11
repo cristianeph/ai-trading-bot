@@ -425,13 +425,13 @@ class FoundationalTradingBot(BaseTradingBot):
             },
         )
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="buy",
             price=avg_price,
             amount=executed_amount,
-            mode=settings.TRADING_MODE,
             pnl=0.0,
+            fee_usdt=entry_fee_usdt,
         )
         self.log.info(
             f"[{symbol}] Open long: amount={executed_amount:.6f}, "
@@ -515,13 +515,13 @@ class FoundationalTradingBot(BaseTradingBot):
 
         self.positions[symbol] = None
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell",
             price=exit_price,
             amount=executed_amount,
-            mode=settings.TRADING_MODE,
             pnl=pnl,
+            fee_usdt=exit_fee_usdt,
         )
         self.log.info(
             f"[{symbol}] Close long: amount={executed_amount:.6f}, "
@@ -634,22 +634,6 @@ class FoundationalTradingBot(BaseTradingBot):
         elif action == "sell":
             self._handle_sell(symbol, price, confidence)
 
-    def _check_max_drawdown(self) -> None:
-        """
-        Implement a maximum drawdown circuit breaker to stop the bot if losses
-        exceed a certain threshold.
-        """
-        equity = compute_equity(self.capital, self.positions)
-        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
-
-        if drawdown_pct >= self.config.max_drawdown_pct:
-            self.log.error(
-                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
-                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
-                f"Stopping bot."
-            )
-            self.get_profit()
-            raise SystemExit("Max Drawdown circuit breaker triggered.")
 
     def _process_symbol_decision(
         self,
@@ -663,8 +647,6 @@ class FoundationalTradingBot(BaseTradingBot):
         """
         Process the decision for a specific symbol based on model prediction and risk management.
         """
-        self._check_max_drawdown()
-
         if self._should_skip_decision_same_candle(symbol, candle_ts, price):
             return
 

@@ -40,6 +40,12 @@ class Trade(SQLModel, table=True):
     pnl: Optional[float] = None
     bot_type: str = Field(default=None, index=True)
 
+    # REL-001: Enhanced metadata
+    invested_usdt_equivalent: Optional[float] = None
+    usdt_rate: Optional[float] = None
+    fee_usdt: Optional[float] = None
+    reference_id: Optional[str] = Field(default=None, index=True)
+
 
 class Equity(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -139,6 +145,10 @@ class Storage:
             mode: str = "paper",
             pnl: Optional[float] = None,
             bot_type: Optional[str] = None,
+            invested_usdt_equivalent: Optional[float] = None,
+            usdt_rate: Optional[float] = None,
+            fee_usdt: Optional[float] = None,
+            reference_id: Optional[str] = None,
     ) -> None:
         """
         Persist a trade in the DB.
@@ -159,6 +169,10 @@ class Storage:
             mode=mode,
             pnl=pnl,
             bot_type=effective_bot_type,
+            invested_usdt_equivalent=invested_usdt_equivalent,
+            usdt_rate=usdt_rate,
+            fee_usdt=fee_usdt,
+            reference_id=reference_id,
         )
         with self._get_session() as session:
             session.add(trade)

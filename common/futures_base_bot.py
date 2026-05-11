@@ -102,6 +102,28 @@ class FuturesTradingBotBase(ABC):
     # -----------------------------
     # Exchange access
     # -----------------------------
+    def _check_max_drawdown(self) -> None:
+        """
+        Implement a maximum drawdown circuit breaker to stop the bot if losses
+        exceed a certain threshold.
+        """
+        # Fetch threshold from storage/config
+        max_drawdown_pct = self.storage.get_bot_config_float("max_drawdown_pct", 0.1)
+
+        # Approximate equity (for futures this is often balance + unrealized PnL)
+        # For simplicity here we use self.capital
+        equity = float(self.capital)
+        drawdown_pct = (self.initial_equity - equity) / self.initial_equity if self.initial_equity > 0 else 0.0
+
+        if drawdown_pct >= max_drawdown_pct:
+            self.log.error(
+                f"[CIRCUIT BREAKER] Max Drawdown reached: {drawdown_pct:.2%}. "
+                f"Initial Equity: {self.initial_equity:.2f}, Current Equity: {equity:.2f}. "
+                f"Stopping bot."
+            )
+            # In futures, we should close all positions
+            raise SystemExit(f"Max Drawdown circuit breaker triggered: {drawdown_pct:.2%}")
+
     def _get_exchange(self):
         """
         Retorna un cliente de exchange configurado para FUTURES.
@@ -181,12 +203,45 @@ class FuturesTradingBotBase(ABC):
         """
         self.log.info(f"[BOT] Free capital: {self.capital:.2f} USDT")
 
+    def _log_trade(
+        self,
+        symbol: str,
+        side: str,
+        price: float,
+        amount: float,
+        pnl: Optional[float] = None,
+        reference_id: Optional[str] = None,
+        fee_usdt: float = 0.0,
+    ) -> None:
+        """
+        Helper to log trades with rich metadata for futures.
+        """
+        usdt_rate = price  # Assuming quote is USDT
+        invested_usdt_equivalent = amount * price
+
+        self.storage.log_trade(
+            symbol=symbol,
+            side=side,
+            price=price,
+            amount=amount,
+            mode=settings.TRADING_MODE,
+            pnl=pnl,
+            bot_type=self.bot_type,
+            invested_usdt_equivalent=invested_usdt_equivalent,
+            usdt_rate=usdt_rate,
+            fee_usdt=fee_usdt,
+            reference_id=reference_id,
+        )
+
     # -----------------------------
     # Main loop
     # -----------------------------
     def run(self) -> None:
         self.log.info("[BOT] Futures bot started.")
         while True:
+            # REL-003: Check circuit breakers
+            self._check_max_drawdown()
+
             for symbol in self.symbols:
                 state = self._fetch_latest_market_state(symbol)
                 if state is None:

@@ -1,7 +1,14 @@
 # common/data_client.py
 import time
+from typing import Optional, List, Tuple, Dict, Any
 import ccxt
 from common.config import settings
+from common.exceptions import (
+    ExchangeError,
+    InsufficientBalanceError,
+    ConnectivityError,
+    OrderError,
+)
 
 
 def get_binance_client():
@@ -85,29 +92,64 @@ def get_historical_ohlcv(symbol: str, timeframe: str = None, limit: int = 500):
     return all_candles
 
 
-def place_order(symbol: str, side: str, amount: float):
+def place_order(
+    symbol: str,
+    side: str,
+    amount: float,
+    order_type: str = "market",
+    price: Optional[float] = None,
+    params: Optional[dict] = None,
+):
     """
     Crea una orden en Binance SOLO si TRADING_MODE='live'.
     Si TRADING_MODE='paper', simula la orden y no toca el exchange.
-    side: 'buy' o 'sell'
+
+    - side: 'buy' o 'sell'
+    - order_type: 'market' o 'limit'
+    - price: Requerido para órdenes limit
+    - params: Parámetros extra para ccxt (ej: timeInForce, postOnly)
     """
+    if params is None:
+        params = {}
+
     if settings.TRADING_MODE == "paper":
-        print(f"[PAPER] {side.upper()} {amount} {symbol} (no se envía a Binance)")
+        print(f"[PAPER] {side.upper()} {order_type.upper()} {amount} {symbol} @ {price or 'MARKET'} (no se envía a Binance)")
         return {
             "symbol": symbol,
             "side": side,
-            "type": "market",
+            "type": order_type,
             "amount": float(amount),
-            "price": None,
-            "average": None,
-            "cost": None,
+            "price": price,
+            "average": price,
+            "cost": (price * amount) if price else None,
             "fee": {"currency": "USDT", "cost": 0.0},
+            "status": "closed",
         }
 
     exchange = get_binance_client()
 
-    # En un MVP usamos órdenes de mercado
-    print(f"[LIVE] Enviando orden {side.upper()} {amount} {symbol}...")
-    order = exchange.create_market_order(symbol, side, amount)
-    print(f"[LIVE] Orden ejecutada: {order}")
-    return order
+    try:
+        if order_type.lower() == "market":
+            print(f"[LIVE] Enviando orden MARKET {side.upper()} {amount} {symbol}...")
+            order = exchange.create_market_order(symbol, side, amount, params)
+        elif order_type.lower() == "limit":
+            if price is None:
+                raise OrderError("Price is required for limit orders")
+            print(f"[LIVE] Enviando orden LIMIT {side.upper()} {amount} {symbol} @ {price}...")
+            order = exchange.create_limit_order(symbol, side, amount, price, params)
+        else:
+            raise OrderError(f"Unsupported order type: {order_type}")
+
+        print(f"[LIVE] Orden ejecutada: {order}")
+        return order
+
+    except ccxt.InsufficientFunds as e:
+        raise InsufficientBalanceError(f"Insufficient funds: {e}") from e
+    except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
+        raise ConnectivityError(f"Connectivity issue: {e}") from e
+    except ccxt.ExchangeError as e:
+        raise ExchangeError(f"Exchange error: {e}") from e
+    except Exception as e:
+        if "minNotional" in str(e):
+            raise OrderError(f"Order below minimum notional: {e}") from e
+        raise OrderError(f"Unexpected order error: {e}") from e

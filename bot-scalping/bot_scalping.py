@@ -309,13 +309,13 @@ class ScalpingTradingBot(BaseTradingBot):
         )
         pos["storage_id"] = storage_id
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="buy",
             price=avg_price,
             amount=executed_amount,
-            mode=settings.TRADING_MODE,
             pnl=0.0,
+            fee_usdt=entry_fee_usdt,
         )
 
         self.log.info(
@@ -364,13 +364,13 @@ class ScalpingTradingBot(BaseTradingBot):
 
         self.capital += net_proceeds
 
-        self.storage.log_trade(
+        self._log_trade(
             symbol=symbol,
             side="sell",
             price=exit_price,
             amount=amount,
-            mode=settings.TRADING_MODE,
             pnl=pnl,
+            fee_usdt=exit_fee_usdt,
         )
 
         storage_id = cast(Optional[int], pos.get("storage_id"))
