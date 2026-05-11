@@ -630,35 +630,30 @@ class RebalancingTradingBot(BaseTradingBot):
         if trade_value <= 0 or not math.isfinite(trade_value):
             return
 
+        min_notional = self._get_min_notional(symbol)
+        if min_notional <= 0:
+            min_notional = 10.1  # Binance standard fallback + buffer
+
+        if trade_value < min_notional:
+            self.log.info(
+                f"[{symbol}] Skipping BUY: trade_value {trade_value:.2f} < "
+                f"min_notional {min_notional:.2f}"
+            )
+            return
+
         min_amount = self.config.min_trade_amount.get(symbol, 0.0)
         amount = trade_value / price
-        # Avoid Binance NOTIONAL filter failures (min quote value per order)
-        min_notional = self._get_min_notional(symbol)
-        notional = amount * price
-        if min_notional > 0 and notional < min_notional:
-            self.log.info(
-                f"[{symbol}] Skipping BUY: notional {notional:.2f} < min_notional {min_notional:.2f}"
-            )
-            return
-        if amount < min_amount:
-            self.log.info(
-                f"[{symbol}] Skipping BUY: amount {amount:.8f} < "
-                f"min_trade_amount {min_amount:.8f}"
-            )
+        
+        # Use basic math to avoid excessive complexity in the bot script.
+        # The common data_client will handle formatting to avoid scientific notation.
+        amount = math.floor(amount * 100000000) / 100000000
+        
+        if amount <= 0:
             return
 
-        # Sanity: capital might have changed
-        if trade_value > self.capital:
-            trade_value = max(0.0, self.capital)
-            amount = trade_value / price
-            if amount < min_amount or trade_value <= 0:
-                self.log.info(
-                    f"[{symbol}] Skipping BUY: not enough capital for minimum trade "
-                    f"(capital={self.capital:.2f}, trade_value={trade_value:.2f})"
-                )
-                return
-
-        result = self._execute_exchange_order(symbol, "buy", amount, price)
+        # BTC/USDT market orders on Binance don't need price, and passing it might cause ConversionSyntax if price is weird
+        price_for_order = None if settings.TRADING_MODE == "live" else price
+        result = self._execute_exchange_order(symbol, "buy", amount, price_for_order)
         if result is None:
             return
         filled_base, avg_price, cost_quote, fee_currency, fee_cost = result
@@ -761,6 +756,26 @@ class RebalancingTradingBot(BaseTradingBot):
         amount = trade_value / price
         amount = min(amount, amount_available)
 
+        # Min notional check
+        min_notional = self._get_min_notional(symbol)
+        if min_notional <= 0:
+            min_notional = 10.1  # Binance standard fallback + buffer
+
+        current_notional = amount * price
+        if current_notional < min_notional:
+            self.log.info(
+                f"[{symbol}] Skipping SELL: notional {current_notional:.2f} < "
+                f"min_notional {min_notional:.2f}"
+            )
+            return
+
+        # Use basic math to avoid excessive complexity in the bot script.
+        # The common data_client will handle formatting to avoid scientific notation.
+        amount = math.floor(amount * 100000000) / 100000000
+        
+        if amount <= 0:
+            return
+
         min_amount = self.config.min_trade_amount.get(symbol, 0.0)
         if amount < min_amount:
             self.log.info(
@@ -769,7 +784,9 @@ class RebalancingTradingBot(BaseTradingBot):
             )
             return
 
-        result = self._execute_exchange_order(symbol, "sell", amount, price)
+        # BTC/USDT market orders on Binance don't need price, and passing it might cause ConversionSyntax if price is weird
+        price_for_order = None if settings.TRADING_MODE == "live" else price
+        result = self._execute_exchange_order(symbol, "sell", amount, price_for_order)
         if result is None:
             return
         executed_amount, exit_price, cost_quote, fee_currency, fee_cost = result
@@ -850,7 +867,7 @@ class RebalancingTradingBot(BaseTradingBot):
         for symbol in self.config.symbols:
             pos = self.positions.get(symbol)
             if pos:
-                current_value = pos["amount"] * pos["price"]
+                current_value = pos["amount"] * pos.get("last_price", pos.get("entry_price", 0.0))
             else:
                 current_value = 0.0
             
@@ -912,7 +929,9 @@ class RebalancingTradingBot(BaseTradingBot):
         # REL-005: Dynamic Rebalancing Thresholds
         effective_threshold = self.config.rebalance_threshold_pct
         if self.config.dynamic_threshold_enabled:
-            vol_20 = latest_row.get("vol_20", 0.0)
+            vol_20 = float(latest_row.get("vol_20", 0.0))
+            if not math.isfinite(vol_20):
+                vol_20 = 0.0
             # Example logic: threshold increases with volatility to reduce churn
             # base_threshold * (1 + vol_20 * multiplier)
             # If vol_20 is 0.02 (2%), and multiplier is 10, threshold increases by 20%
@@ -958,9 +977,9 @@ class RebalancingTradingBot(BaseTradingBot):
         if self.config.smart_vol_enabled:
             vol_20 = None
             try:
-                vol_20 = float(latest_row["vol_20"])
+                vol_20 = float(latest_row.get("vol_20", 0.0))
             except Exception:
-                vol_20 = None
+                vol_20 = 0.0
 
             if vol_20 is not None and math.isfinite(vol_20):
                 vol_factor = 1.0
@@ -1028,7 +1047,9 @@ class RebalancingTradingBot(BaseTradingBot):
         self.log.info(f"[{symbol}] [LIQUIDATION] Selling all managed amount: {amount:.6f} at price≈{price:.2f}")
 
         # Execute full sell
-        result = self._execute_exchange_order(symbol, "sell", amount, price)
+        # BTC/USDT market orders on Binance don't need price, and passing it might cause ConversionSyntax if price is weird
+        price_for_order = None if settings.TRADING_MODE == "live" else price
+        result = self._execute_exchange_order(symbol, "sell", amount, price_for_order)
         if result is None:
             return
 
@@ -1151,7 +1172,7 @@ def run_bot_loop() -> None:
     usdt_balance = check_if_balance()
     bot = RebalancingTradingBot(
         balance=usdt_balance,
-        sleep_seconds=420,  # initial hint, overridden by BotConfig if present
+        sleep_seconds=900,  # initial hint, overridden by BotConfig if present
     )
     bot.run()
 

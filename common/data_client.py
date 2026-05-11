@@ -129,14 +129,23 @@ def place_order(
     exchange = get_binance_client()
 
     try:
+        # Round amount to 8 decimal places and convert to string to avoid scientific notation
+        # scientific notation like '1e-07' triggers ConversionSyntax in some CCXT versions/exchanges
+        amount_str = f"{amount:.8f}".rstrip('0').rstrip('.')
+        if not amount_str:
+            amount_str = "0"
+        
         if order_type.lower() == "market":
-            print(f"[LIVE] Enviando orden MARKET {side.upper()} {amount} {symbol}...")
-            order = exchange.create_market_order(symbol, side, amount, params)
+            print(f"[LIVE] Enviando orden MARKET {side.upper()} {amount_str} {symbol}...")
+            # If price is provided for a market order, we pass it to create_market_order.
+            # In ccxt, some exchanges (like Binance) might use 'price' parameter in market orders for specific reasons, 
+            # but usually it's None. However, ccxt's create_market_order signature is (symbol, side, amount, price=None, params={})
+            order = exchange.create_market_order(symbol, side, float(amount_str), price, params)
         elif order_type.lower() == "limit":
             if price is None:
                 raise OrderError("Price is required for limit orders")
-            print(f"[LIVE] Enviando orden LIMIT {side.upper()} {amount} {symbol} @ {price}...")
-            order = exchange.create_limit_order(symbol, side, amount, price, params)
+            print(f"[LIVE] Enviando orden LIMIT {side.upper()} {amount_str} {symbol} @ {price}...")
+            order = exchange.create_limit_order(symbol, side, float(amount_str), price, params)
         else:
             raise OrderError(f"Unsupported order type: {order_type}")
 
@@ -152,4 +161,10 @@ def place_order(
     except Exception as e:
         if "minNotional" in str(e):
             raise OrderError(f"Order below minimum notional: {e}") from e
-        raise OrderError(f"Unexpected order error: {e}") from e
+        
+        # Log more details about the exception for debugging ConversionSyntax
+        print(f"DEBUG: Order Exception type: {type(e)}, msg: {e}")
+        import traceback
+        traceback.print_exc()
+
+        raise OrderError(f"Unexpected order error: {e} [{type(e)}]") from e

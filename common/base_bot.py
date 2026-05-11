@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, Optional, Any, TypedDict
 
@@ -43,8 +44,8 @@ def compute_equity(cash: float, positions: Dict[str, Optional[Position]]) -> flo
     equity = cash
     for pos in positions.values():
         if pos is not None:
-            amount = pos.get("amount", 0.0)
-            last_price = pos.get("last_price", 0.0)
+            amount = float(pos.get("amount", 0.0))
+            last_price = float(pos.get("last_price", pos.get("entry_price", 0.0)))
             equity += amount * last_price
     return equity
 
@@ -90,10 +91,11 @@ class BaseTradingBot(ABC):
         self.initial_equity: float = compute_equity(self.capital, self.positions)
 
         # track del último candle y precio de decisión por símbolo
-        self.last_decision_state: Dict[str, DecisionState] = {
-            symbol: {"candle_ts": None, "price": None}
-            for symbol in self.symbols
-        }
+        self.last_decision_state: Dict[str, DecisionState] = defaultdict(
+            lambda: {"candle_ts": None, "price": None}
+        )
+        for symbol in self.symbols:
+            self.last_decision_state[symbol] = {"candle_ts": None, "price": None}
 
         self.log.info(
             f"[BOT:{bot_type}] Inicializado. Capital inicial: {self.capital}, "
