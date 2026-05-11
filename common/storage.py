@@ -93,6 +93,15 @@ class OpenPosition(SQLModel, table=True):
     bot_type: str = Field(default=None, index=True)
 
 
+class DriftLog(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: str = Field(index=True)
+    total_drift: float
+    mode: str = Field(index=True)
+    bot_type: str = Field(default=None, index=True)
+    details: Optional[str] = None  # JSON string with per-symbol drift
+
+
 class Storage:
     """
     Simple storage wrapper using SQLModel (ORM over SQLite or MySQL).
@@ -223,6 +232,22 @@ class Storage:
         equity_row = Equity(timestamp=ts, equity=equity)
         with self._get_session() as session:
             session.add(equity_row)
+            session.commit()
+
+    # -------------------------------------------------------------------------
+    # Drift
+    # -------------------------------------------------------------------------
+    def log_drift(self, total_drift: float, details: Optional[str] = None, mode: str = "paper") -> None:
+        ts = datetime.utcnow().isoformat()
+        drift_row = DriftLog(
+            timestamp=ts,
+            total_drift=total_drift,
+            mode=mode,
+            bot_type=self.bot_type,
+            details=details
+        )
+        with self._get_session() as session:
+            session.add(drift_row)
             session.commit()
 
     def get_equity_curve(self) -> List[Tuple[str, float]]:
