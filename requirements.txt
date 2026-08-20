@@ -11,5 +11,4 @@ requests
 sqlmodel
 pydantic>=1.10,<2.0
 pymysql
-alembic
 sentry-sdk
