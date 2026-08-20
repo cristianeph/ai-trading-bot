@@ -1,21 +1,21 @@
 services:
-  model_btc:
-    build:
-      context: .
-      dockerfile: model-btc/model.Dockerfile
-    container_name: crypto-model-btc
-    restart: unless-stopped
-    ports:
-      - "8001:8001"
-
-  model_eth:
-    build:
-      context: .
-      dockerfile: model-eth/model.Dockerfile
-    container_name: crypto-model-eth
-    restart: unless-stopped
-    ports:
-      - "8002:8002"
+#  model_btc:
+#    build:
+#      context: .
+#      dockerfile: model-btc/model.Dockerfile
+#    container_name: crypto-model-btc
+#    restart: unless-stopped
+#    ports:
+#      - "8001:8001"
+#
+#  model_eth:
+#    build:
+#      context: .
+#      dockerfile: model-eth/model.Dockerfile
+#    container_name: crypto-model-eth
+#    restart: unless-stopped
+#    ports:
+#      - "8002:8002"
 
 #  bot_foundational:
 #    build:

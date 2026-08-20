@@ -292,6 +292,7 @@ class RebalancingTradingBot(BaseTradingBot):
     def __init__(
         self,
         *,
+        bot_id: str,
         sleep_seconds: int = 60,
         min_confidence: float = 0.51,
         balance: float = 0.0,
@@ -308,10 +309,10 @@ class RebalancingTradingBot(BaseTradingBot):
             balance=balance,
             storage=storage,
             model_client=model_client,
-            bot_type="rebalancing",
+            bot_id=bot_id,
         )
 
-        self.log = BotLogger("RebalancingTradingBot")
+        self.log = BotLogger(f"RebalancingTradingBot-{bot_id}")
 
         # Feature flag: disable model usage (pure rebalancing)
         self.use_model_prediction: bool = str(os.getenv("USE_MODEL_PREDICTION", "false")).lower() in (
@@ -1168,13 +1169,73 @@ def check_if_balance():
         usdt_balance = float(settings.BASE_CAPITAL)
     return usdt_balance
 
-def run_bot_loop() -> None:
-    usdt_balance = check_if_balance()
-    bot = RebalancingTradingBot(
-        balance=usdt_balance,
-        sleep_seconds=900,  # initial hint, overridden by BotConfig if present
-    )
-    bot.run()
+import threading
+from sqlmodel import Session, select, create_engine
+from common.storage import get_db_url, Bot
+
+class RebalancingManager:
+    def __init__(self):
+        self.engine = create_engine(get_db_url())
+        self.active_threads: Dict[str, threading.Thread] = {}
+        self.stop_events: Dict[str, threading.Event] = {}
+        self.log = BotLogger("RebalancingManager")
+
+    def get_active_rebalancing_bots(self) -> List[Bot]:
+        with Session(self.engine) as session:
+            stmt = select(Bot).where(Bot.strategy == "rebalancing", Bot.status == "active")
+            return list(session.exec(stmt).all())
+
+    def _run_bot(self, bot_id: str, stop_event: threading.Event):
+        try:
+            usdt_balance = check_if_balance()
+            bot = RebalancingTradingBot(
+                bot_id=bot_id,
+                balance=usdt_balance,
+                sleep_seconds=900,
+            )
+            bot.run(stop_event=stop_event)
+        except Exception as e:
+            self.log.error(f"Error in bot {bot_id} thread: {e}")
+
+    def run(self):
+        self.log.info("Starting Rebalancing Manager...")
+        try:
+            while True:
+                try:
+                    active_bots = self.get_active_rebalancing_bots()
+                    active_bot_ids = {b.id for b in active_bots}
+
+                    if not active_bots:
+                        self.log.info("No active rebalancing bots found. Waiting...")
+
+                    # Start new bots
+                    for b in active_bots:
+                        if b.id not in self.active_threads:
+                            self.log.info(f"Starting thread for bot: {b.id} ({b.name})")
+                            stop_event = threading.Event()
+                            t = threading.Thread(target=self._run_bot, args=(b.id, stop_event), daemon=True)
+                            t.start()
+                            self.active_threads[b.id] = t
+                            self.stop_events[b.id] = stop_event
+
+                    # Stop inactive/removed bots
+                    for bot_id in list(self.active_threads.keys()):
+                        if bot_id not in active_bot_ids:
+                            self.log.info(f"Stopping thread for inactive bot: {bot_id}")
+                            self.stop_events[bot_id].set()
+                            del self.active_threads[bot_id]
+                            del self.stop_events[bot_id]
+
+                except Exception as e:
+                    self.log.error(f"Manager error: {e}")
+
+                time.sleep(60)
+        except KeyboardInterrupt:
+            self.log.error("Manager interrupted. Stopping all bots...")
+            for bot_id, stop_event in self.stop_events.items():
+                self.log.info(f"Stopping bot {bot_id}...")
+                stop_event.set()
 
 if __name__ == "__main__":
-    run_bot_loop()
+    manager = RebalancingManager()
+    manager.run()

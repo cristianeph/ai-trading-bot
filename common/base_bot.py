@@ -71,11 +71,11 @@ class BaseTradingBot(ABC):
         balance: float = 0.0,
         storage: Optional[Storage] = None,
         model_client: Optional[ModelClient] = None,
-        bot_type: str = "base",
+        bot_id: str = "base",
     ) -> None:
-        self.bot_type = bot_type
+        self.bot_id = bot_id
         self.log = BotLogger(self.__class__.__name__)
-        self.storage = storage or Storage(bot_type=bot_type)
+        self.storage = storage or Storage(bot_id=bot_id)
         self.model_client = model_client or ModelClient(settings.MODEL_URL)
 
         self.config = self.load_config()
@@ -98,7 +98,7 @@ class BaseTradingBot(ABC):
             self.last_decision_state[symbol] = {"candle_ts": None, "price": None}
 
         self.log.info(
-            f"[BOT:{bot_type}] Inicializado. Capital inicial: {self.capital}, "
+            f"[BOT:{bot_id}] Inicializado. Capital inicial: {self.capital}, "
             f"Equity inicial≈{self.initial_equity:.2f} USDT"
         )
 
@@ -248,7 +248,7 @@ class BaseTradingBot(ABC):
             amount=amount,
             mode=settings.TRADING_MODE,
             pnl=pnl,
-            bot_type=self.bot_type,
+            bot_id=self.bot_id,
             invested_usdt_equivalent=invested_usdt_equivalent,
             usdt_rate=usdt_rate,
             fee_usdt=fee_usdt,
@@ -461,10 +461,14 @@ class BaseTradingBot(ABC):
         self._log_equity()
         self.log.info("[BOT] Liquidation process finished.")
 
-    def run(self) -> None:
+    def run(self, stop_event: Optional[Any] = None) -> None:
         self.log.info("[BOT] Starting trading loop...")
         try:
             while True:
+                if stop_event and stop_event.is_set():
+                    self.log.info("[BOT] Stop event set. Exiting loop.")
+                    break
+                
                 # REL-003: Check circuit breakers at start of loop
                 self._check_max_drawdown()
 
@@ -476,7 +480,10 @@ class BaseTradingBot(ABC):
                     except Exception as symbol_exc:  # noqa: BLE001
                         self.log.error(f"[{symbol}] Error in symbol loop: {symbol_exc}")
 
-                time.sleep(self.config.sleep_seconds)
+                if stop_event:
+                    stop_event.wait(self.config.sleep_seconds)
+                else:
+                    time.sleep(self.config.sleep_seconds)
 
         except KeyboardInterrupt:
             self.log.error("[BOT] Keyboard interrupt. Shutting down bot...")

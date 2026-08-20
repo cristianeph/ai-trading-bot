@@ -29,6 +29,14 @@ def get_db_url() -> str:
     return f"sqlite:///{DB_PATH}"
 
 
+class Bot(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    short_id: str = Field(index=True, unique=True)
+    name: str
+    status: str
+    strategy: str
+
+
 class Trade(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
@@ -38,7 +46,7 @@ class Trade(SQLModel, table=True):
     amount: float
     mode: str  # "paper" / "live"
     pnl: Optional[float] = None
-    bot_type: str = Field(default=None, index=True)
+    bot_id: str = Field(default=None, index=True)
 
     # REL-001: Enhanced metadata
     invested_usdt_equivalent: Optional[float] = None
@@ -51,6 +59,7 @@ class Equity(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: str = Field(index=True)
     equity: float
+    bot_id: Optional[str] = Field(default=None, index=True)
 
 
 class Decision(SQLModel, table=True):
@@ -66,7 +75,7 @@ class Decision(SQLModel, table=True):
     equity_before: Optional[float] = None
     price: Optional[float] = None
     candle_ts: Optional[str] = None
-    bot_type: str = Field(default=None, index=True)
+    bot_id: str = Field(default=None, index=True)
 
     outcome_pnl_usdt: Optional[float] = None
     outcome_pnl_pct: Optional[float] = None
@@ -76,7 +85,7 @@ class Decision(SQLModel, table=True):
 
 class BotConfig(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    bot_type: str = Field(index=True)  # e.g. "foundational", "scalping"
+    bot_id: str = Field(index=True)  # e.g. "foundational", "scalping"
     key: str = Field(index=True)  # e.g. "min_confidence", "tp_pct"
     value: str  # stored as string, cast on read
 
@@ -90,7 +99,7 @@ class OpenPosition(SQLModel, table=True):
     entry_price: float
     entry_fee_usdt: float = 0.0
     mode: str = Field(index=True)  # "paper" / "live"
-    bot_type: str = Field(default=None, index=True)
+    bot_id: str = Field(default=None, index=True)
 
 
 class DriftLog(SQLModel, table=True):
@@ -98,13 +107,13 @@ class DriftLog(SQLModel, table=True):
     timestamp: str = Field(index=True)
     total_drift: float
     mode: str = Field(index=True)
-    bot_type: str = Field(default=None, index=True)
+    bot_id: str = Field(default=None, index=True)
     details: Optional[str] = None  # JSON string with per-symbol drift
 
 
 class TargetWeightSchedule(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    bot_type: str = Field(index=True)
+    bot_id: str = Field(index=True)
     symbol: str
     target_weight: float
     start_timestamp: str = Field(index=True)  # ISO format
@@ -116,7 +125,7 @@ class Storage:
     Simple storage wrapper using SQLModel (ORM over SQLite or MySQL).
 
     - Uses SQLite by default unless MYSQL_* environment variables are supplied.
-    - Supports a logical `bot_type` dimension, so multiple bots can write to
+    - Supports a logical `bot_id` dimension, so multiple bots can write to
       the same tables without mixing their records.
     - Public methods:
         - log_trade(...)
@@ -127,15 +136,15 @@ class Storage:
         - close()
     """
 
-    def __init__(self, bot_type: str, db_path: Path = DB_PATH):
+    def __init__(self, bot_id: str, db_path: Path = DB_PATH):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
 
         self.db_url = get_db_url()
-        self.bot_type = bot_type
+        self.bot_id = bot_id
 
         print("Db engine detected:", self.db_url)
-        print("Bot type:", self.bot_type)
+        print("Bot type:", self.bot_id)
 
         connect_args = {"check_same_thread": False} if self.db_url.startswith("sqlite") else {}
         self.engine = create_engine(
@@ -162,7 +171,7 @@ class Storage:
             amount: float,
             mode: str = "paper",
             pnl: Optional[float] = None,
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
             invested_usdt_equivalent: Optional[float] = None,
             usdt_rate: Optional[float] = None,
             fee_usdt: Optional[float] = None,
@@ -172,11 +181,11 @@ class Storage:
         Persist a trade in the DB.
 
         - mode: "paper" or "live"
-        - bot_type: label of the bot ("foundational", "scalping", etc.).
-          If not provided, defaults to Storage.bot_type.
+        - bot_id: label of the bot ("foundational", "scalping", etc.).
+          If not provided, defaults to Storage.bot_id.
         """
         ts = datetime.utcnow().isoformat()
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
 
         trade = Trade(
             timestamp=ts,
@@ -186,7 +195,7 @@ class Storage:
             amount=amount,
             mode=mode,
             pnl=pnl,
-            bot_type=effective_bot_type,
+            bot_id=effective_bot_id,
             invested_usdt_equivalent=invested_usdt_equivalent,
             usdt_rate=usdt_rate,
             fee_usdt=fee_usdt,
@@ -204,7 +213,7 @@ class Storage:
     ) -> Optional[Trade]:
         """
         Returns the most recent trade for the given symbol, side, trading mode,
-        and current Storage.bot_type, or None if there is no record.
+        and current Storage.bot_id, or None if there is no record.
         """
         with self._get_session() as session:
             statement = (
@@ -213,7 +222,7 @@ class Storage:
                     Trade.symbol == symbol,
                     Trade.side == side,
                     Trade.mode == mode,
-                    Trade.bot_type == self.bot_type,
+                    Trade.bot_id == self.bot_id,
                 )
                 .order_by(desc(Trade.timestamp))
                 .limit(1)
@@ -236,9 +245,10 @@ class Storage:
     # -------------------------------------------------------------------------
     # Equity
     # -------------------------------------------------------------------------
-    def log_equity(self, equity: float) -> None:
+    def log_equity(self, equity: float, bot_id: Optional[str] = None) -> None:
         ts = datetime.utcnow().isoformat()
-        equity_row = Equity(timestamp=ts, equity=equity)
+        effective_bot_id = bot_id or self.bot_id
+        equity_row = Equity(timestamp=ts, equity=equity, bot_id=effective_bot_id)
         with self._get_session() as session:
             session.add(equity_row)
             session.commit()
@@ -252,16 +262,17 @@ class Storage:
             timestamp=ts,
             total_drift=total_drift,
             mode=mode,
-            bot_type=self.bot_type,
+            bot_id=self.bot_id,
             details=details
         )
         with self._get_session() as session:
             session.add(drift_row)
             session.commit()
 
-    def get_equity_curve(self) -> List[Tuple[str, float]]:
+    def get_equity_curve(self, bot_id: Optional[str] = None) -> List[Tuple[str, float]]:
+        effective_bot_id = bot_id or self.bot_id
         with self._get_session() as session:
-            stmt = select(Equity).order_by(Equity.timestamp.asc())
+            stmt = select(Equity).where(Equity.bot_id == effective_bot_id).order_by(Equity.timestamp.asc())
             rows = session.exec(stmt).all()
             return [(row.timestamp, row.equity) for row in rows]
 
@@ -280,7 +291,7 @@ class Storage:
             equity_before: Optional[float] = None,
             price: Optional[float] = None,
             candle_ts: Optional[str] = None,
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
     ) -> None:
         """
         Persist a model decision and its feature context.
@@ -292,10 +303,10 @@ class Storage:
           - equity_before: total equity right before applying the decision
           - price: market price at the moment of the decision
           - candle_ts: candle timestamp (as string) used for this decision
-          - bot_type: logical bot label ("foundational", "scalping", etc.)
+          - bot_id: logical bot label ("foundational", "scalping", etc.)
         """
         ts = datetime.utcnow().isoformat()
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
 
         decision = Decision(
             timestamp=ts,
@@ -309,7 +320,7 @@ class Storage:
             equity_before=equity_before,
             price=price,
             candle_ts=candle_ts,
-            bot_type=effective_bot_type,
+            bot_id=effective_bot_id,
         )
         with self._get_session() as session:
             session.add(decision)
@@ -324,10 +335,10 @@ class Storage:
             entry_price: float,
             entry_fee_usdt: float = 0.0,
             mode: str = "paper",
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
     ) -> int:
         ts = datetime.utcnow().isoformat()
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
 
         row = OpenPosition(
             timestamp=ts,
@@ -337,7 +348,7 @@ class Storage:
             entry_price=entry_price,
             entry_fee_usdt=entry_fee_usdt,
             mode=mode,
-            bot_type=effective_bot_type,
+            bot_id=effective_bot_id,
         )
         with self._get_session() as session:
             session.add(row)
@@ -354,7 +365,7 @@ class Storage:
 
     def get_open_positions(self, mode: Optional[str] = None) -> List[OpenPosition]:
         with self._get_session() as session:
-            stmt = select(OpenPosition).where(OpenPosition.bot_type == self.bot_type)
+            stmt = select(OpenPosition).where(OpenPosition.bot_id == self.bot_id)
             if mode is not None:
                 stmt = stmt.where(OpenPosition.mode == mode)
             stmt = stmt.order_by(OpenPosition.timestamp.asc())
@@ -368,10 +379,10 @@ class Storage:
     ) -> Optional[OpenPosition]:
         """
         Returns the most recent OpenPosition row for the given symbol and this
-        Storage.bot_type, optionally filtered by mode.
+        Storage.bot_id, optionally filtered by mode.
         """
         with self._get_session() as session:
-            stmt = select(OpenPosition).where(OpenPosition.bot_type == self.bot_type)
+            stmt = select(OpenPosition).where(OpenPosition.bot_id == self.bot_id)
             stmt = stmt.where(OpenPosition.symbol == symbol)
             if mode is not None:
                 stmt = stmt.where(OpenPosition.mode == mode)
@@ -388,19 +399,19 @@ class Storage:
         entry_price: float,
         entry_fee_usdt: float = 0.0,
         mode: str = "paper",
-        bot_type: Optional[str] = None,
+        bot_id: Optional[str] = None,
     ) -> None:
         """
-        Creates or updates a single OpenPosition row per (bot_type, symbol, mode).
+        Creates or updates a single OpenPosition row per (bot_id, symbol, mode).
         """
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
         ts = datetime.utcnow().isoformat()
 
         with self._get_session() as session:
             stmt = (
                 select(OpenPosition)
                 .where(
-                    OpenPosition.bot_type == effective_bot_type,
+                    OpenPosition.bot_id == effective_bot_id,
                     OpenPosition.symbol == symbol,
                     OpenPosition.mode == mode,
                 )
@@ -418,7 +429,7 @@ class Storage:
                     entry_price=entry_price,
                     entry_fee_usdt=entry_fee_usdt,
                     mode=mode,
-                    bot_type=effective_bot_type,
+                    bot_id=effective_bot_id,
                 )
                 session.add(row)
             else:
@@ -468,7 +479,7 @@ class Storage:
         after trades have been closed.
         """
         with self._get_session() as session:
-            stmt = select(Decision).where(Decision.bot_type == self.bot_type)
+            stmt = select(Decision).where(Decision.bot_id == self.bot_id)
             stmt = stmt.where(Decision.outcome_label.is_(None))
             if symbol is not None:
                 stmt = stmt.where(Decision.symbol == symbol)
@@ -482,18 +493,18 @@ class Storage:
             self,
             key: str,
             default: Optional[str] = None,
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
     ) -> Optional[str]:
         """
-        Returns the configuration value for (bot_type, key) as a string,
+        Returns the configuration value for (bot_id, key) as a string,
         or the provided default if not found.
         """
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
         with self._get_session() as session:
             stmt = (
                 select(BotConfig)
                 .where(
-                    BotConfig.bot_type == effective_bot_type,
+                    BotConfig.bot_id == effective_bot_id,
                     BotConfig.key == key,
                 )
                 .limit(1)
@@ -507,12 +518,12 @@ class Storage:
             self,
             key: str,
             default: float,
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
     ) -> float:
         """
         Returns configuration value cast to float, or default on error / missing.
         """
-        raw = self.get_bot_config_value(key, None, bot_type=bot_type)
+        raw = self.get_bot_config_value(key, None, bot_id=bot_id)
         if raw is None:
             return default
         try:
@@ -524,12 +535,12 @@ class Storage:
             self,
             key: str,
             default: int,
-            bot_type: Optional[str] = None,
+            bot_id: Optional[str] = None,
     ) -> int:
         """
         Returns configuration value cast to int, or default on error / missing.
         """
-        raw = self.get_bot_config_value(key, None, bot_type=bot_type)
+        raw = self.get_bot_config_value(key, None, bot_id=bot_id)
         if raw is None:
             return default
         try:
@@ -540,55 +551,55 @@ class Storage:
     def get_bot_config_prefix(
         self,
         prefix: str,
-        bot_type: Optional[str] = None,
+        bot_id: Optional[str] = None,
     ) -> dict[str, str]:
         """
-        Returns all configuration key/value pairs for this bot_type whose key
+        Returns all configuration key/value pairs for this bot_id whose key
         starts with the provided prefix. For example: 'target_weight.'.
         """
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
         with self._get_session() as session:
             stmt = (
                 select(BotConfig)
-                .where(BotConfig.bot_type == effective_bot_type)
+                .where(BotConfig.bot_id == effective_bot_id)
                 .where(BotConfig.key.like(f"{prefix}%"))
             )
             rows = session.exec(stmt).all()
             return {row.key: row.value for row in rows}
 
-    def set_bot_config_value(self, key: str, value: str, bot_type: Optional[str] = None) -> None:
+    def set_bot_config_value(self, key: str, value: str, bot_id: Optional[str] = None) -> None:
         """
-        Creates or updates a configuration value for (bot_type, key).
+        Creates or updates a configuration value for (bot_id, key).
         """
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
         with self._get_session() as session:
             stmt = (
                 select(BotConfig)
                 .where(
-                    BotConfig.bot_type == effective_bot_type,
+                    BotConfig.bot_id == effective_bot_id,
                     BotConfig.key == key,
                 )
                 .limit(1)
             )
             row = session.exec(stmt).first()
             if row is None:
-                row = BotConfig(bot_type=effective_bot_type, key=key, value=value)
+                row = BotConfig(bot_id=effective_bot_id, key=key, value=value)
                 session.add(row)
             else:
                 row.value = value
             session.commit()
 
-    def get_active_weight_schedules(self, bot_type: Optional[str] = None) -> List[TargetWeightSchedule]:
+    def get_active_weight_schedules(self, bot_id: Optional[str] = None) -> List[TargetWeightSchedule]:
         """
-        Returns all weight schedules for this bot_type that are currently active
+        Returns all weight schedules for this bot_id that are currently active
         based on the current timestamp.
         """
-        effective_bot_type = bot_type or self.bot_type
+        effective_bot_id = bot_id or self.bot_id
         now = datetime.utcnow().isoformat()
         with self._get_session() as session:
             stmt = (
                 select(TargetWeightSchedule)
-                .where(TargetWeightSchedule.bot_type == effective_bot_type)
+                .where(TargetWeightSchedule.bot_id == effective_bot_id)
                 .where(TargetWeightSchedule.start_timestamp <= now)
                 .where(
                     or_(
